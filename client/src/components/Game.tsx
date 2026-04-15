@@ -1,5 +1,3 @@
-'use client';
-
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 
@@ -14,7 +12,6 @@ const MAX_RESURRECTS = 3;
 const MANA_MAX = 5.0;
 const MANA_REGEN = 0.35;
 const FLY_HEIGHT = 6.0;
-const DEATH_TIMER = 9;
 
 const ABILITY_MAX = [0.35, 0.5, 5, 7, 15, 8, 25, 0]; // smite, fish, wine, parry, flood, bread, grace, fly
 const ABILITY_ICONS = ['⚡', '🐟', '🍷', '✋', '🌊', '🍞', '☀', '✞'];
@@ -146,7 +143,6 @@ interface Player {
   shieldOn: boolean;
   shieldT: number;
   flying: boolean;
-  flyY: number;
   yaw: number;
   walkPhase: number;
   onGround: boolean;
@@ -694,7 +690,7 @@ export default function Game() {
         const m = new THREE.Mesh(
           new THREE.TorusGeometry(1.0, 0.12, 8, 32),
           new THREE.MeshLambertMaterial({ color: 0x00ffff, emissive: 0x00aaff, emissiveIntensity: 0.7 }),
-        ) as CelestialRing;
+        ) as unknown as CelestialRing;
         m.rotSpeed = {
           x: Math.random() * 0.8 - 0.4,
           y: Math.random() * 0.8 + 0.5,
@@ -860,7 +856,7 @@ export default function Game() {
         waterMesh.visible = true;
         skyMat.uniforms.topColor.value.set(0x1a3a6a);
         skyMat.uniforms.bottomColor.value.set(0x2255aa);
-        scene.fog.color.set(0x2255aa);
+        scene.fog!.color.set(0x2255aa);
         enemies.forEach(e => e.speed *= 0.4);
         Audio.flood();
       }
@@ -870,7 +866,7 @@ export default function Game() {
         waterMesh.visible = false;
         skyMat.uniforms.topColor.value.set(0x3a7bd5);
         skyMat.uniforms.bottomColor.value.set(0x8fbbe0);
-        scene.fog.color.set(0x8fbbe0);
+        scene.fog!.color.set(0x8fbbe0);
         enemies.forEach(e => {
           e.speed = ENEMY_TYPES[e.type].spd * (1 + gameRef.current.wave * 0.035);
         });
@@ -889,7 +885,8 @@ export default function Game() {
         enemies.forEach(e => {
           const dx = player.x - (e.mesh as THREE.Group).position.x;
           const dz = player.z - (e.mesh as THREE.Group).position.z;
-          if (Math.sqrt(dx * dx + dz * dz) < 8 && !e.ally && !ENEMY_TYPES[e.type].boss && Math.random() < 0.2) {
+          if (Math.sqrt(dx * dx + dz * dz) >= 8 || e.ally || ENEMY_TYPES[e.type].boss) return;
+          if (Math.random() < 0.2) {
             e.ally = true;
             e.allyTimer = 15;
             spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, '😇 ОБРАЩЁН!', '#c8a84b');
@@ -1091,15 +1088,22 @@ export default function Game() {
         // Clear entities
         enemies.forEach(e => scene.remove(e.mesh as THREE.Group));
         enemies.length = 0;
-        projectiles.forEach(p => scene.remove(p.mesh as THREE.Mesh));
+        projectiles.forEach(p => scene.remove(p.mesh));
         projectiles.length = 0;
-        pickups.forEach(p => scene.remove(p.mesh as THREE.Mesh));
+        pickups.forEach(p => scene.remove(p.mesh));
         pickups.length = 0;
-        rings.forEach(r => scene.remove(r as unknown as THREE.Mesh));
+        rings.forEach(r => scene.remove(r));
         rings.length = 0;
-        floatTexts.forEach(f => scene.remove(f.mesh));
+        floatTexts.forEach(f => {
+          (f.mesh.material as THREE.SpriteMaterial).map?.dispose();
+          (f.mesh.material as THREE.SpriteMaterial).dispose();
+          scene.remove(f.mesh);
+        });
         floatTexts.length = 0;
-        particles.forEach(p => scene.remove(p.mesh));
+        particles.forEach(p => {
+          (p.mesh.material as THREE.MeshBasicMaterial).dispose();
+          scene.remove(p.mesh);
+        });
         particles.length = 0;
 
         gameRef.current.wave = 1;
@@ -1116,7 +1120,7 @@ export default function Game() {
         waterMesh.visible = false;
         skyMat.uniforms.topColor.value.set(0x3a7bd5);
         skyMat.uniforms.bottomColor.value.set(0x8fbbe0);
-        scene.fog.color.set(0x8fbbe0);
+        scene.fog!.color.set(0x8fbbe0);
 
         player.hp = 100;
         player.mana = MANA_MAX;
@@ -1448,15 +1452,16 @@ export default function Game() {
                 nearE = en;
               }
             });
-            if (nearE && nd > 0.1) {
-              const adx = (nearE.mesh as THREE.Group).position.x - ep.x;
-              const adz = (nearE.mesh as THREE.Group).position.z - ep.z;
+            const nearEEnemy = nearE as Enemy | null;
+            if (nearEEnemy && nd > 0.1) {
+              const adx = nearEEnemy.mesh.position.x - ep.x;
+              const adz = nearEEnemy.mesh.position.z - ep.z;
               const ad = Math.sqrt(adx * adx + adz * adz);
               ep.x += (adx / ad) * e.speed * dt;
               ep.z += (adz / ad) * e.speed * dt;
             }
-            if (nearE && nd < 1.5 && e.stepCd <= 0) {
-              nearE.hp -= 2;
+            if (nearEEnemy && nd < 1.5 && e.stepCd <= 0) {
+              nearEEnemy.hp -= 2;
               e.stepCd = 1;
             }
             if (e.allyTimer <= 0 || e.hp <= 0) {
@@ -1581,14 +1586,15 @@ export default function Game() {
             let nd = 999;
             enemies.forEach(e => {
               if (e.ally) return;
-              const d = p.mesh.position.distanceTo((e.mesh as THREE.Group).position);
+              const d = p.mesh.position.distanceTo(e.mesh.position);
               if (d < nd) {
                 nd = d;
                 ne = e;
               }
             });
-            if (ne && nd < 20) {
-              const td = (ne.mesh as THREE.Group).position.clone().add(new THREE.Vector3(0, 0.8, 0)).sub(p.mesh.position).normalize();
+            const neEnemy = ne as Enemy | null;
+            if (neEnemy && nd < 20) {
+              const td = neEnemy.mesh.position.clone().add(new THREE.Vector3(0, 0.8, 0)).sub(p.mesh.position).normalize();
               p.dir.x = THREE.MathUtils.lerp(p.dir.x, td.x, dt * 4);
               p.dir.z = THREE.MathUtils.lerp(p.dir.z, td.z, dt * 4);
               const len = Math.sqrt(p.dir.x * p.dir.x + p.dir.z * p.dir.z);
@@ -1605,7 +1611,7 @@ export default function Game() {
           if (p.type === 'fish') p.mesh.rotation.y = Math.atan2(p.dir.x, p.dir.z);
 
           if (p.life > p.maxLife) {
-            scene.remove(p.mesh as THREE.Mesh);
+            scene.remove(p.mesh);
             projectiles.splice(i, 1);
             continue;
           }
@@ -1633,7 +1639,7 @@ export default function Game() {
                 }
                 if (p.type === 'smite') chainLightning(p.mesh.position.clone(), e, dmg);
               }
-              scene.remove(p.mesh as THREE.Mesh);
+              scene.remove(p.mesh);
               projectiles.splice(i, 1);
               hit = true;
               break;
@@ -1653,6 +1659,8 @@ export default function Game() {
           f.mesh.position.y = f.startY + f.life * 1.4;
           f.mesh.material.opacity = Math.max(0, 1 - f.life);
           if (f.life >= 1) {
+            (f.mesh.material as THREE.SpriteMaterial).map?.dispose();
+            (f.mesh.material as THREE.SpriteMaterial).dispose();
             scene.remove(f.mesh);
             floatTexts.splice(i, 1);
           }
@@ -1666,6 +1674,7 @@ export default function Game() {
           p.mesh.position.z += p.v.z * dt;
           (p.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - p.life);
           if (p.life >= 1) {
+            (p.mesh.material as THREE.MeshBasicMaterial).dispose();
             scene.remove(p.mesh);
             particles.splice(i, 1);
           }
@@ -1678,11 +1687,10 @@ export default function Game() {
       function updateDead(dt: number) {
         gameRef.current.deadTimer -= dt;
         setDeadTimer(Math.max(0, Math.ceil(gameRef.current.deadTimer)));
-        const day = Math.min(3, Math.max(1, 4 - Math.ceil(gameRef.current.deadTimer / (DEAD_SEC / 3))));
 
         if (gameRef.current.deadTimer <= 0) {
           gameRef.current.resurrectCount++;
-          player.livesLeft = Math.max(0, player.livesLeft);
+          player.livesLeft = Math.max(0, player.livesLeft - 1);
 
           if (player.livesLeft <= 0) {
             gameRef.current.status = 'gameover';
@@ -1737,9 +1745,10 @@ export default function Game() {
       let accumulator = 0;
       let lastHudAt = 0;
       const HUD_INTERVAL_MS = 48;
+      let rafId = 0;
 
       const animate = (time: number) => {
-        requestAnimationFrame(animate);
+        rafId = requestAnimationFrame(animate);
 
         const rawDt = Math.min((time - lastTime) / 1000, 0.1);
         lastTime = time;
@@ -1769,6 +1778,8 @@ export default function Game() {
           while (accumulator >= PHYSICS_DT && steps < maxSteps) {
             gameRef.current.gtime += PHYSICS_DT;
             updatePlayer(PHYSICS_DT);
+            updateEnemies(PHYSICS_DT);
+            updateProjs(PHYSICS_DT);
             checkMelee();
             accumulator -= PHYSICS_DT;
             steps++;
@@ -1780,20 +1791,17 @@ export default function Game() {
             if (btn === 0 && player.cds[0] <= 0) {
               const isCrit = fireProjectile('smite', player.x, 1 + player.y, player.z, player.yaw);
               player.cds[0] = 0.35;
-              const critText = isCrit ? '⚡ КРИТ! ' + BIBLE_CRITS[Math.floor(Math.random() * BIBLE_CRITS.length)] : '⚡ Смайт!';
               if (isCrit) Audio.crit();
               else Audio.smite();
             }
             if (btn === 2 && player.cds[1] <= 0) {
-              const isCrit = fireProjectile('fish', player.x, 1 + player.y, player.z, player.yaw);
+              fireProjectile('fish', player.x, 1 + player.y, player.z, player.yaw);
               player.cds[1] = 0.5;
               Audio.fish();
             }
           });
           clicks.length = 0;
 
-          updateEnemies(rawDt);
-          updateProjs(rawDt);
           updateFloats(rawDt);
           updateCamera();
 
@@ -1877,10 +1885,11 @@ export default function Game() {
       setEngineReady(true);
 
       // Start loop
-      requestAnimationFrame(animate);
+      rafId = requestAnimationFrame(animate);
 
       // Cleanup
       return () => {
+        cancelAnimationFrame(rafId);
         startGameRef.current = null;
         resumeGameRef.current = null;
         showMenuRef.current = null;
