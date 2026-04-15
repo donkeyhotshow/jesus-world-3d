@@ -885,14 +885,16 @@ export default function Game() {
         enemies.forEach(e => {
           const dx = player.x - (e.mesh as THREE.Group).position.x;
           const dz = player.z - (e.mesh as THREE.Group).position.z;
-          if (Math.sqrt(dx * dx + dz * dz) >= 8 || e.ally || ENEMY_TYPES[e.type].boss) return;
-          if (Math.random() < 0.2) {
-            e.ally = true;
-            e.allyTimer = 15;
-            spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, '😇 ОБРАЩЁН!', '#c8a84b');
-          } else {
-            e.wrath = 3;
-            spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, '😡', '#ff4444');
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist < 8 && !e.ally && !ENEMY_TYPES[e.type].boss) {
+            if (Math.random() < 0.2) {
+              e.ally = true;
+              e.allyTimer = 15;
+              spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, '😇 ОБРАЩЁН!', '#c8a84b');
+            } else {
+              e.wrath = 3;
+              spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, '😡', '#ff4444');
+            }
           }
         });
       }
@@ -1452,16 +1454,16 @@ export default function Game() {
                 nearE = en;
               }
             });
-            const nearEEnemy = nearE as Enemy | null;
-            if (nearEEnemy && nd > 0.1) {
-              const adx = nearEEnemy.mesh.position.x - ep.x;
-              const adz = nearEEnemy.mesh.position.z - ep.z;
+            const nearEnemy = nearE as Enemy | null;
+            if (nearEnemy && nd > 0.1) {
+              const adx = nearEnemy.mesh.position.x - ep.x;
+              const adz = nearEnemy.mesh.position.z - ep.z;
               const ad = Math.sqrt(adx * adx + adz * adz);
               ep.x += (adx / ad) * e.speed * dt;
               ep.z += (adz / ad) * e.speed * dt;
             }
-            if (nearEEnemy && nd < 1.5 && e.stepCd <= 0) {
-              nearEEnemy.hp -= 2;
+            if (nearEnemy && nd < 1.5 && e.stepCd <= 0) {
+              nearEnemy.hp -= 2;
               e.stepCd = 1;
             }
             if (e.allyTimer <= 0 || e.hp <= 0) {
@@ -1592,9 +1594,9 @@ export default function Game() {
                 ne = e;
               }
             });
-            const neEnemy = ne as Enemy | null;
-            if (neEnemy && nd < 20) {
-              const td = neEnemy.mesh.position.clone().add(new THREE.Vector3(0, 0.8, 0)).sub(p.mesh.position).normalize();
+            const nearEnemy = ne as Enemy | null;
+            if (nearEnemy && nd < 20) {
+              const td = nearEnemy.mesh.position.clone().add(new THREE.Vector3(0, 0.8, 0)).sub(p.mesh.position).normalize();
               p.dir.x = THREE.MathUtils.lerp(p.dir.x, td.x, dt * 4);
               p.dir.z = THREE.MathUtils.lerp(p.dir.z, td.z, dt * 4);
               const len = Math.sqrt(p.dir.x * p.dir.x + p.dir.z * p.dir.z);
