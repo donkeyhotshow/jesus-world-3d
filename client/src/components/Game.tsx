@@ -12,6 +12,8 @@ const MAX_RESURRECTS = 3;
 const MANA_MAX = 5.0;
 const MANA_REGEN = 0.35;
 const FLY_HEIGHT = 6.0;
+const BASE_FOV = 68;
+const COYOTE_SEC = 0.14;
 
 const ABILITY_ICONS = ['⚡', '🐟', '🍷', '✋', '🌊', '🍞', '☀', '✞'];
 
@@ -131,6 +133,13 @@ interface Player {
   yaw: number;
   walkPhase: number;
   onGround: boolean;
+  // Arcade feel
+  attackTimer: number;   // decays to 0, drives arm swing
+  attackHand: number;    // 1 = right arm, -1 = left arm
+  landSquash: number;    // 1 → 0, squash on landing
+  coyoteTime: number;    // coyote jump window (sec)
+  prevOnGround: boolean;
+  idlePhase: number;     // slow bob when stationary
 }
 
 interface Enemy {
@@ -148,6 +157,7 @@ interface Enemy {
   ally: boolean;
   allyTimer: number;
   legionSplit: boolean;
+  hitFlash: number;   // 1 → 0, white emissive on hit
 }
 
 interface Projectile {
@@ -205,6 +215,7 @@ export default function Game() {
   const [eventLog, setEventLog] = useState<string[]>([]);
   const [lockedMsg, setLockedMsg] = useState('');
   const [satanWarning, setSatanWarning] = useState(false);
+  const [hitFlash, setHitFlash] = useState(0); // 0-1, red screen overlay
 
   // Refs for game loop (mutable state)
   const gameRef = useRef({
@@ -224,6 +235,10 @@ export default function Game() {
     comboKills: 0,
     comboTimer: 0,
     pendingSpawnCount: 0,
+    // Arcade feel
+    camShake: 0,
+    targetFov: BASE_FOV,
+    hitFlashVal: 0,    // raw value, synced to React state every HUD tick
   });
 
   useEffect(() => {
@@ -944,6 +959,13 @@ export default function Game() {
         yaw: 0,
         walkPhase: 0,
         onGround: true,
+        // Arcade feel
+        attackTimer: 0,
+        attackHand: 1,
+        landSquash: 0,
+        coyoteTime: 0,
+        prevOnGround: true,
+        idlePhase: 0,
       };
 
       const enemies: Enemy[] = [];
@@ -952,6 +974,7 @@ export default function Game() {
       const spawnTimers: ReturnType<typeof setTimeout>[] = [];
 
       const camPos = new THREE.Vector3(0, 8, 10);
+      const camShakeVec = new THREE.Vector3();
 
       // ═══════════════════════════════════════════════════════
       //  ABILITIES
@@ -966,6 +989,9 @@ export default function Game() {
         skyMat.uniforms.bottomColor.value.set(0x2255aa);
         scene.fog!.color.set(0x2255aa);
         enemies.forEach(e => { if (!e.ally) e.speed *= 0.4; });
+        // Flood camera shake
+        gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.45);
+        gameRef.current.targetFov = BASE_FOV + 12;
         Audio.flood();
       }
 
@@ -1015,10 +1041,14 @@ export default function Game() {
           const dz = player.z - ep.z;
           if (Math.sqrt(dx * dx + dz * dz) < 6) {
             e.hp -= 4;
+            e.hitFlash = 1.0;
             spawnFloatText(ep.x, ep.y + 1, ep.z, '⚡-4', '#ffee44');
-            spawnParticles(ep.x, ep.y, ep.z, 0xffdd00, 6);
+            spawnParticles(ep.x, ep.y, ep.z, 0xffdd00, 8);
           }
         });
+        // Big parry shake + FOV pulse
+        gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.55);
+        gameRef.current.targetFov = BASE_FOV + 14;
         Audio.crit();
       }
 
@@ -1063,6 +1093,8 @@ export default function Game() {
         });
 
         player.hp = Math.min(player.maxHp, player.hp + 30);
+        gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.38);
+        gameRef.current.targetFov = BASE_FOV + 16;
         Audio.grace();
       }
 
@@ -1173,6 +1205,7 @@ export default function Game() {
           ally: false,
           allyTimer: 0,
           legionSplit: type === 'l',
+          hitFlash: 0,
         });
       }
 
@@ -1184,6 +1217,11 @@ export default function Game() {
         else mesh = makeWineMesh();
 
         mesh.position.set(x + dir.x * 0.9, y, z + dir.z * 0.9);
+
+        // Stretch projectile in direction of travel for speed feel
+        const stretchAxis = type === 'fish' ? 'x' : 'y';
+        mesh.scale[stretchAxis] = type === 'smite' ? 1.5 : 1.3;
+
         scene.add(mesh);
 
         const isCrit = Math.random() < 0.20;
@@ -1201,6 +1239,15 @@ export default function Game() {
           bibleQuote: bq,
           homing: type === 'fish',
         });
+
+        // Arcade feel: FOV kick + attack animation
+        const fovKick = type === 'smite' ? 9 : type === 'fish' ? 6 : 5;
+        gameRef.current.targetFov = BASE_FOV + fovKick;
+        player.attackTimer = 0.28;
+        player.attackHand = type === 'fish' ? -1 : 1;
+
+        // Tiny camera kick backwards for smite
+        if (type === 'smite') gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.06);
 
         return isCrit;
       }
@@ -1277,6 +1324,12 @@ export default function Game() {
         player.walkPhase = 0;
         player.flying = false;
         player.onGround = true;
+        player.attackTimer = 0;
+        player.attackHand = 1;
+        player.landSquash = 0;
+        player.coyoteTime = 0;
+        player.prevOnGround = true;
+        player.idlePhase = 0;
 
         gameRef.current.camYaw = 0;
         gameRef.current.camPitch = -0.22;
@@ -1351,6 +1404,9 @@ export default function Game() {
         player.x = Math.max(-B, Math.min(B, player.x));
         player.z = Math.max(-B, Math.min(B, player.z));
 
+        // Track previous ground state before physics update
+        player.prevOnGround = player.onGround;
+
         // Vertical physics
         if (isFlying) {
           player.y += (FLY_HEIGHT - player.y) * 0.08;
@@ -1366,24 +1422,43 @@ export default function Game() {
           player.y += player.velY * dt;
           if (player.y <= 0) {
             player.y = 0;
+            // Landing squash: bigger squash the harder the fall
+            if (!player.prevOnGround && player.velY < -2) {
+              player.landSquash = Math.min(1.0, Math.abs(player.velY) * 0.055);
+              gameRef.current.camShake = Math.max(gameRef.current.camShake, player.landSquash * 0.22);
+            }
             player.velY = 0;
             player.onGround = true;
+            player.coyoteTime = COYOTE_SEC;
           } else {
             player.onGround = false;
+            if (player.coyoteTime > 0) player.coyoteTime -= dt;
           }
         }
 
         player.mesh!.position.set(player.x, player.y, player.z);
 
-        // Смотрит туда же, куда камера (третье лицо сзади)
+        // Face camera direction
         player.yaw = gameRef.current.camYaw;
         player.mesh!.rotation.y = player.yaw;
 
-        // Walk/fly animation
+        // Landing squash decay + apply
+        if (player.landSquash > 0) {
+          player.landSquash = Math.max(0, player.landSquash - dt * 6);
+          const sy = 1 - player.landSquash * 0.45;
+          const sx = 1 + player.landSquash * 0.22;
+          player.mesh!.scale.set(sx, sy, sx);
+        } else {
+          player.mesh!.scale.set(1, 1, 1);
+        }
+
+        // Walk / fly animation
         if (isMoving && !isFlying) player.walkPhase += dt * 8;
+        if (!isMoving && !isFlying) player.idlePhase += dt * 1.8;
 
         const ag = player.mesh!.getObjectByName('armGroup') as THREE.Group;
         const lg = player.mesh!.getObjectByName('legGroup') as THREE.Group;
+
         if (isFlying) {
           if (ag) {
             const a1 = ag.getObjectByName('arm1') as THREE.Mesh;
@@ -1391,17 +1466,47 @@ export default function Game() {
             if (a1) a1.rotation.z = Math.PI / 2;
             if (aN) aN.rotation.z = -Math.PI / 2;
           }
+        } else if (player.attackTimer > 0) {
+          // Attack arm punch: shoot arm forward+down
+          player.attackTimer -= dt;
+          const t = player.attackTimer / 0.28; // 1 → 0
+          const punchAngle = (1 - t) * Math.PI * 0.55; // swings forward then back
+          if (ag) {
+            const fireArm = ag.getObjectByName(`arm${player.attackHand}`) as THREE.Mesh;
+            const idleArm = ag.getObjectByName(`arm${-player.attackHand}`) as THREE.Mesh;
+            if (fireArm) {
+              fireArm.rotation.x = Math.sin(punchAngle * Math.PI) * 1.2;
+              fireArm.rotation.z = player.attackHand * (Math.PI / 4 + 0.12) - punchAngle * 0.3;
+            }
+            if (idleArm) {
+              // Counter swing for balance
+              idleArm.rotation.x = -Math.sin(punchAngle * Math.PI) * 0.35;
+            }
+          }
         } else if (ag && isMoving) {
           const a1 = ag.getObjectByName('arm1') as THREE.Mesh;
           const aN = ag.getObjectByName('arm-1') as THREE.Mesh;
-          if (a1) a1.rotation.x = Math.sin(player.walkPhase) * 0.4;
-          if (aN) aN.rotation.x = -Math.sin(player.walkPhase) * 0.4;
+          if (a1) { a1.rotation.x = Math.sin(player.walkPhase) * 0.4; a1.rotation.z = Math.PI / 4 + 0.12; }
+          if (aN) { aN.rotation.x = -Math.sin(player.walkPhase) * 0.4; aN.rotation.z = -(Math.PI / 4 + 0.12); }
+        } else if (ag && !isMoving) {
+          // Idle: gentle arm sway
+          const a1 = ag.getObjectByName('arm1') as THREE.Mesh;
+          const aN = ag.getObjectByName('arm-1') as THREE.Mesh;
+          const idleSway = Math.sin(player.idlePhase) * 0.06;
+          if (a1) { a1.rotation.x = idleSway; a1.rotation.z = Math.PI / 4 + 0.12; }
+          if (aN) { aN.rotation.x = -idleSway; aN.rotation.z = -(Math.PI / 4 + 0.12); }
         }
+
         if (lg && isMoving && !isFlying) {
           const l1 = lg.getObjectByName('leg1') as THREE.Mesh;
           const lN = lg.getObjectByName('leg-1') as THREE.Mesh;
           if (l1) l1.rotation.x = Math.sin(player.walkPhase) * 0.35;
           if (lN) lN.rotation.x = -Math.sin(player.walkPhase) * 0.35;
+        } else if (lg && !isMoving) {
+          const l1 = lg.getObjectByName('leg1') as THREE.Mesh;
+          const lN = lg.getObjectByName('leg-1') as THREE.Mesh;
+          if (l1) l1.rotation.x = 0;
+          if (lN) lN.rotation.x = 0;
         }
 
         const fc = player.mesh!.getObjectByName('flyCross') as THREE.Group;
@@ -1423,7 +1528,7 @@ export default function Game() {
           sh.rotation.y += dt * 3;
         }
 
-        // Cooldowns (in-place update avoids new array allocation per frame)
+        // Cooldowns
         for (let ci = 0; ci < player.cds.length; ci++) {
           if (ci !== 7) player.cds[ci] = Math.max(0, player.cds[ci] - dt);
         }
@@ -1548,6 +1653,10 @@ export default function Game() {
               spawnFloatText(player.x, 0, player.z, `-${dmg}`, '#ff2222');
               spawnParticles(player.x, 1, player.z, 0xff0000, 5);
               Audio.hit();
+              // Arcade: screen shake + red vignette + camera yank
+              gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.38 + ENEMY_TYPES[e.type].sz * 0.14);
+              gameRef.current.hitFlashVal = Math.min(1, gameRef.current.hitFlashVal + 0.75);
+              gameRef.current.targetFov = BASE_FOV + 10;
             }
           }
         }
@@ -1568,6 +1677,18 @@ export default function Game() {
 
           const bl = em.getObjectByName('bossLight') as THREE.PointLight;
           if (bl) bl.intensity = 1 + Math.sin(gameRef.current.gtime * 4) * 0.4;
+
+          // Hit flash: traverse body parts and pulse emissive
+          if (e.hitFlash > 0) {
+            e.hitFlash = Math.max(0, e.hitFlash - dt * 9);
+            const flashIntensity = e.hitFlash * 3.5;
+            em.traverse(child => {
+              if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshLambertMaterial) {
+                child.material.emissive.setHex(0xffffff);
+                child.material.emissiveIntensity = flashIntensity;
+              }
+            });
+          }
 
           const ep = em.position;
           const jdx = player.x - ep.x;
@@ -1704,7 +1825,16 @@ export default function Game() {
               : `${ENEMY_TYPES[e.type].name} +${reward}`;
             eventQueueRef.current = [killMsg, ...eventQueueRef.current].slice(0, 6);
 
-            if (isBoss) Audio.resurrect();
+            if (isBoss) {
+              Audio.resurrect();
+              // Boss death: big screen shake + FOV punch
+              gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.9);
+              gameRef.current.targetFov = BASE_FOV + 18;
+              spawnParticles(ep.x, ep.y + 1, ep.z, 0xff4400, 20);
+            } else {
+              // Normal kill: micro shake
+              gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.04);
+            }
 
             if (gameRef.current.score > gameRef.current.hiScore) {
               gameRef.current.hiScore = gameRef.current.score;
@@ -1778,14 +1908,19 @@ export default function Game() {
               if (p.type === 'wine') {
                 e.drunk = 4;
                 e.drunkExplode = true;
+                e.hitFlash = 0.7;
                 spawnFloatText(ep2.x, ep2.y, ep2.z, '🍷 ПЬЯН!', '#ffaa44');
               } else {
                 const base = p.type === 'smite' ? 2 : 1;
                 const dmg = p.crit ? base * 3 : base;
                 e.hp -= dmg;
+                e.hitFlash = p.crit ? 1.0 : 0.6;
                 if (p.crit) {
                   spawnParticles(p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0xff8800, 10);
                   spawnFloatText(ep2.x, ep2.y + 1, ep2.z, `⚡КРИТ -${dmg}`, '#ff8800');
+                  // Crit: mini screen shake + FOV pulse
+                  gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.14);
+                  gameRef.current.targetFov = Math.max(gameRef.current.targetFov, BASE_FOV + 6);
                   Audio.crit();
                 } else {
                   spawnParticles(p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0xff5500, 5);
@@ -1882,14 +2017,49 @@ export default function Game() {
       // ═══════════════════════════════════════════════════════════════
       function updateCamera() {
         gameRef.current.camPitch = Math.max(-0.9, Math.min(0.5, gameRef.current.camPitch));
+
         const lookTarget = new THREE.Vector3(player.x, 1.4 + player.y * 0.5, player.z);
         const ox = -Math.sin(gameRef.current.camYaw) * Math.cos(gameRef.current.camPitch) * CAM_DIST;
         const oy = -Math.sin(gameRef.current.camPitch) * CAM_DIST + 1.8 + player.y * 0.3;
         const oz = -Math.cos(gameRef.current.camYaw) * Math.cos(gameRef.current.camPitch) * CAM_DIST;
         const desired = new THREE.Vector3(player.x + ox, Math.max(1.5, lookTarget.y + oy), player.z + oz);
         camPos.lerp(desired, 0.22);
+
+        // Camera lean toward movement direction (gentle drift)
+        let lx = 0; let lz = 0;
+        if (keys.has('KeyW') || keys.has('ArrowUp')) { lx -= Math.sin(gameRef.current.camYaw); lz -= Math.cos(gameRef.current.camYaw); }
+        if (keys.has('KeyS') || keys.has('ArrowDown')) { lx += Math.sin(gameRef.current.camYaw); lz += Math.cos(gameRef.current.camYaw); }
+        if (keys.has('KeyA')) { lx -= Math.cos(gameRef.current.camYaw); lz += Math.sin(gameRef.current.camYaw); }
+        if (keys.has('KeyD')) { lx += Math.cos(gameRef.current.camYaw); lz -= Math.sin(gameRef.current.camYaw); }
+        const lm = Math.sqrt(lx * lx + lz * lz);
+        const LEAN = player.flying ? 0.6 : 0.35;
+        if (lm > 0.01) {
+          camPos.x += (lx / lm) * LEAN;
+          camPos.z += (lz / lm) * LEAN;
+        }
+
+        // Screen shake: decaying oscillation with random direction
+        if (gameRef.current.camShake > 0) {
+          gameRef.current.camShake = Math.max(0, gameRef.current.camShake - 0.04);
+          const s = gameRef.current.camShake;
+          camShakeVec.set(
+            (Math.random() * 2 - 1) * s * 0.55,
+            (Math.random() * 2 - 1) * s * 0.38,
+            (Math.random() * 2 - 1) * s * 0.28,
+          );
+          camPos.add(camShakeVec);
+        }
+
         camera.position.copy(camPos);
         camera.lookAt(lookTarget);
+
+        // FOV animation: kick then relax back to BASE_FOV
+        if (gameRef.current.targetFov > BASE_FOV) {
+          gameRef.current.targetFov = Math.max(BASE_FOV, gameRef.current.targetFov - 55 * (1 / 60));
+        }
+        camera.fov = THREE.MathUtils.lerp(camera.fov, gameRef.current.targetFov, 0.18);
+        camera.updateProjectionMatrix();
+
         camera.updateMatrixWorld();
       }
 
@@ -1982,6 +2152,14 @@ export default function Game() {
             setCooldowns([...player.cds]);
             setEventLog([...eventQueueRef.current]);
 
+            // Decay hit flash and sync to React state
+            if (gameRef.current.hitFlashVal > 0) {
+              gameRef.current.hitFlashVal = Math.max(0, gameRef.current.hitFlashVal - 0.22);
+              setHitFlash(gameRef.current.hitFlashVal);
+            } else {
+              setHitFlash(0);
+            }
+
             // Draw minimap
             const mc = minimapRef.current;
             if (mc) {
@@ -2057,9 +2235,13 @@ export default function Game() {
         if (e.code === 'KeyF') activateBread();
         if (e.code === 'KeyG') activateGrace();
         if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !player.flying && player.mana > 0.3 && player.onGround) startFlight();
-        if (e.code === 'Space' && !player.flying && player.onGround) {
+        if (e.code === 'Space' && !player.flying && (player.onGround || player.coyoteTime > 0)) {
           player.velY = 7.5;
           player.onGround = false;
+          player.coyoteTime = 0;
+          // Jump stretch: squash up for a frame
+          player.landSquash = -0.12; // negative = stretch up briefly
+          gameRef.current.targetFov = Math.max(gameRef.current.targetFov, BASE_FOV + 5);
           e.preventDefault();
         }
       };
@@ -2165,6 +2347,16 @@ export default function Game() {
       <div ref={containerRef} className="w-full h-full">
         <canvas ref={canvasRef} className="w-full h-full" />
       </div>
+
+      {/* Red damage vignette overlay */}
+      {hitFlash > 0 && (
+        <div
+          className="absolute inset-0 pointer-events-none z-30"
+          style={{
+            background: `radial-gradient(ellipse at center, transparent 40%, rgba(200,0,0,${(hitFlash * 0.82).toFixed(2)}) 100%)`,
+          }}
+        />
+      )}
 
       {/* HUD - only show when playing or dead */}
       {(gameStatus === 'playing' || gameStatus === 'dead') && (
