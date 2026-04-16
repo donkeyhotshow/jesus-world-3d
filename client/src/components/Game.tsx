@@ -1724,7 +1724,6 @@ export default function Game() {
 
         if (gameRef.current.deadTimer <= 0) {
           gameRef.current.resurrectCount++;
-          player.livesLeft = Math.max(0, player.livesLeft - 1);
 
           if (player.livesLeft <= 0) {
             gameRef.current.status = 'gameover';
@@ -1732,6 +1731,7 @@ export default function Game() {
             return;
           }
 
+          player.livesLeft--;
           setLivesLeft(player.livesLeft);
 
           gameRef.current.status = 'playing';
