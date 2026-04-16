@@ -724,7 +724,7 @@ export default function Game() {
           scene.add(m);
           particles.push({ mesh: m, v, life: 0 });
         }
-        mat.dispose(); // base template material no longer needed
+        mat.dispose(); // safe: each particle uses mat.clone(), so disposing the template here does not affect existing clones
       }
 
       function spawnRing(x: number, y: number, z: number) {
@@ -860,7 +860,7 @@ export default function Game() {
         skyMat.uniforms.topColor.value.set(0x1a3a6a);
         skyMat.uniforms.bottomColor.value.set(0x2255aa);
         scene.fog!.color.set(0x2255aa);
-        enemies.forEach(e => e.speed *= 0.4);
+        enemies.forEach(e => { if (!e.ally) e.speed *= 0.4; });
         Audio.flood();
       }
 
@@ -1307,8 +1307,10 @@ export default function Game() {
           sh.rotation.y += dt * 3;
         }
 
-        // Cooldowns
-        player.cds = player.cds.map((cd, i) => (i === 7 ? cd : Math.max(0, cd - dt)));
+        // Cooldowns (in-place update avoids new array allocation per frame)
+        for (let ci = 0; ci < player.cds.length; ci++) {
+          if (ci !== 7) player.cds[ci] = Math.max(0, player.cds[ci] - dt);
+        }
         if (player.iframes > 0) player.iframes -= dt;
         if (player.cheekOn) {
           player.cheekT -= dt;
@@ -1370,14 +1372,7 @@ export default function Game() {
           }
         }
 
-        // Replenish rings
-        if (rings.length < 2) {
-          const a = Math.random() * Math.PI * 2;
-          const d = 20 + Math.random() * 50;
-          spawnRing(Math.cos(a) * d, 18 + Math.random() * 14, Math.sin(a) * d);
-        }
-
-        // Next wave
+        // Replenish rings — handled once per frame in animate, not here
         if (enemies.length === 0 && gameRef.current.pendingSpawnCount === 0) {
           gameRef.current.waveTimer += dt;
           if (gameRef.current.waveTimer > 2.8) {
@@ -1840,6 +1835,13 @@ export default function Game() {
           updateFloats(rawDt);
           updateCamera();
 
+          // Replenish celestial rings once per frame
+          if (rings.length < 2) {
+            const ra = Math.random() * Math.PI * 2;
+            const rd = 20 + Math.random() * 50;
+            spawnRing(Math.cos(ra) * rd, 18 + Math.random() * 14, Math.sin(ra) * rd);
+          }
+
           if (time - lastHudAt >= HUD_INTERVAL_MS) {
             lastHudAt = time;
             const cm = Math.min(3, 1 + Math.floor(gameRef.current.comboKills / 3) * 0.5);
@@ -1968,6 +1970,20 @@ export default function Game() {
         particles.length = 0;
         burstGeo.dispose();
         renderer.dispose();
+        // Dispose remaining static scene GPU resources (sky, ground, water, trees, rocks, clouds, sun)
+        const disposedMats = new Set<THREE.Material>();
+        scene.traverse(obj => {
+          if (obj instanceof THREE.Mesh) {
+            obj.geometry.dispose();
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material as THREE.Material];
+            mats.forEach(m => { if (!disposedMats.has(m)) { disposedMats.add(m); m.dispose(); } });
+          } else if ((obj as THREE.DirectionalLight).isDirectionalLight || (obj as THREE.PointLight).isPointLight) {
+            ((obj as THREE.DirectionalLight).shadow?.map as THREE.RenderTarget | undefined)?.dispose();
+          }
+        });
+        scene.clear();
+        // Close AudioContext to release OS audio resources
+        if (Audio.ctx) { Audio.ctx.close(); Audio.ctx = null; }
       };
   }, []);
 
