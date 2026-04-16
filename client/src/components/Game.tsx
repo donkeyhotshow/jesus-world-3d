@@ -884,7 +884,7 @@ export default function Game() {
         player.cheekT = 4;
         Audio.parry();
 
-        // Try convert one enemy
+        // Try to convert nearby non-boss enemies (each has 20% chance)
         enemies.forEach(e => {
           const dx = player.x - (e.mesh as THREE.Group).position.x;
           const dz = player.z - (e.mesh as THREE.Group).position.z;
@@ -903,17 +903,15 @@ export default function Game() {
       }
 
       function parryCounter() {
-        const cPos = new THREE.Vector3(player.x, 1, player.z);
         enemies.forEach(e => {
           if (e.ally) return;
-          const d = (e.mesh as THREE.Group).position.distanceTo(cPos);
-          if (d < 6) {
+          const ep = (e.mesh as THREE.Group).position;
+          const dx = player.x - ep.x;
+          const dz = player.z - ep.z;
+          if (Math.sqrt(dx * dx + dz * dz) < 6) {
             e.hp -= 4;
-            spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y + 1, (e.mesh as THREE.Group).position.z, '⚡-4', '#ffee44');
-            {
-              const p = (e.mesh as THREE.Group).position;
-              spawnParticles(p.x, p.y, p.z, 0xffdd00, 6);
-            }
+            spawnFloatText(ep.x, ep.y + 1, ep.z, '⚡-4', '#ffee44');
+            spawnParticles(ep.x, ep.y, ep.z, 0xffdd00, 6);
           }
         });
         Audio.crit();
@@ -1142,6 +1140,7 @@ export default function Game() {
         scene.fog!.color.set(0x8fbbe0);
 
         player.hp = 100;
+        player.maxHp = 100;
         player.mana = MANA_MAX;
         player.dead = false;
         player.iframes = 0;
@@ -1492,6 +1491,7 @@ export default function Game() {
           } else {
             if (e.drunk > 0) {
               e.drunk -= dt;
+              if (e.drunk <= 0) e.drunkExplode = false;
               ep.x += Math.cos(gameRef.current.gtime * 3 + i) * e.speed * dt * 0.4;
               ep.z += Math.sin(gameRef.current.gtime * 2.2 + i) * e.speed * dt * 0.4;
             } else if (e.wrath > 0) {
@@ -1718,7 +1718,6 @@ export default function Game() {
       // ═══════════════════════════════════════════════════════════════
       function updateDead(dt: number) {
         gameRef.current.deadTimer -= dt;
-        setDeadTimer(Math.max(0, Math.ceil(gameRef.current.deadTimer)));
 
         if (gameRef.current.deadTimer <= 0) {
           gameRef.current.resurrectCount++;
@@ -1864,7 +1863,11 @@ export default function Game() {
           updateEnemies(rawDt);
           updateFloats(rawDt);
           updateCamera();
-          if (gameRef.current.status === 'dead') setHp(0);
+          if (time - lastHudAt >= HUD_INTERVAL_MS) {
+            lastHudAt = time;
+            setDeadTimer(Math.max(0, Math.ceil(gameRef.current.deadTimer)));
+            if (gameRef.current.status === 'dead') setHp(0);
+          }
         }
 
         renderer.render(scene, camera);
