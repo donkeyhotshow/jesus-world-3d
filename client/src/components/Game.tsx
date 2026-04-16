@@ -181,14 +181,17 @@ type CelestialRing = THREE.Mesh & {
 export default function Game() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const minimapRef = useRef<HTMLCanvasElement>(null);
   const startGameRef = useRef<(() => void) | null>(null);
   const resumeGameRef = useRef<(() => void) | null>(null);
   const showMenuRef = useRef<(() => void) | null>(null);
   const skipDeadWaitRef = useRef<(() => void) | null>(null);
+  const eventQueueRef = useRef<string[]>([]);
 
   // Game state
   const [gameStatus, setGameStatus] = useState<'menu' | 'playing' | 'paused' | 'dead' | 'gameover'>('menu');
   const [hp, setHp] = useState(100);
+  const [maxHp, setMaxHp] = useState(100);
   const [mana, setMana] = useState(MANA_MAX);
   const [livesLeft, setLivesLeft] = useState(MAX_RESURRECTS);
   const [wave, setWave] = useState(1);
@@ -199,6 +202,9 @@ export default function Game() {
   const [combo, setCombo] = useState(0);
   const [deadTimer, setDeadTimer] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
+  const [eventLog, setEventLog] = useState<string[]>([]);
+  const [lockedMsg, setLockedMsg] = useState('');
+  const [satanWarning, setSatanWarning] = useState(false);
 
   // Refs for game loop (mutable state)
   const gameRef = useRef({
@@ -389,89 +395,142 @@ export default function Game() {
       function makeJesus() {
         const g = new THREE.Group();
         const robeMat = new THREE.MeshLambertMaterial({ color: 0xf0ead8 });
+        const innerRobeMat = new THREE.MeshLambertMaterial({ color: 0xe8d8b8 });
         const bodyMat = new THREE.MeshLambertMaterial({ color: 0xede0c4 });
         const hairMat = new THREE.MeshLambertMaterial({ color: 0x6b3f10 });
         const skinMat = new THREE.MeshLambertMaterial({ color: 0xf5e4c8 });
+        const sandMat = new THREE.MeshLambertMaterial({ color: 0x8b6020 });
 
-        const robe = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.42, 1.3, 10), robeMat);
-        robe.position.y = 0.65;
+        // Robe (outer, flared)
+        const robe = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.46, 1.35, 12), robeMat);
+        robe.position.y = 0.67;
         robe.castShadow = true;
         g.add(robe);
 
-        const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.295, 0.295, 0.09, 10), new THREE.MeshLambertMaterial({ color: 0xc8a84b }));
-        belt.position.y = 0.75;
+        // Inner robe visible at hem
+        const innerRobe = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.40, 0.18, 12), innerRobeMat);
+        innerRobe.position.y = 0.09;
+        g.add(innerRobe);
+
+        // Belt
+        const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.295, 0.295, 0.09, 12), new THREE.MeshLambertMaterial({ color: 0xc8a84b }));
+        belt.position.y = 0.78;
         g.add(belt);
 
-        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.45, 8), bodyMat);
+        // Belt knot
+        const knot = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.07), new THREE.MeshLambertMaterial({ color: 0xb89030 }));
+        knot.position.set(0, 0.78, 0.3);
+        g.add(knot);
+
+        // Upper body
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.45, 10), bodyMat);
         body.position.y = 1.28;
         g.add(body);
 
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 11, 9), skinMat);
+        // Head
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), skinMat);
         head.position.y = 1.63;
         head.castShadow = true;
         g.add(head);
 
-        const hair = new THREE.Mesh(new THREE.SphereGeometry(0.235, 9, 7, 0, Math.PI * 2, 0, Math.PI * 0.52), hairMat);
+        // Hair cap
+        const hair = new THREE.Mesh(new THREE.SphereGeometry(0.235, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.52), hairMat);
         hair.position.y = 1.70;
         g.add(hair);
 
+        // Side hair strands
         [-1, 1].forEach(s => {
-          const lh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.028, 0.38, 6), hairMat);
-          lh.position.set(s as number * 0.19, 1.46, 0);
-          lh.rotation.z = (s as number) * 0.18;
+          const lh = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.022, 0.42, 6), hairMat);
+          lh.position.set(s as number * 0.20, 1.44, 0.02);
+          lh.rotation.z = (s as number) * 0.22;
+          lh.rotation.x = 0.12;
           g.add(lh);
         });
 
-        const beard = new THREE.Mesh(new THREE.SphereGeometry(0.13, 7, 5, 0, Math.PI * 2, Math.PI * 0.4, Math.PI * 0.38), hairMat);
-        beard.position.set(0, 1.52, 0.1);
+        // Beard (fuller shape)
+        const beard = new THREE.Mesh(new THREE.SphereGeometry(0.145, 8, 6, 0, Math.PI * 2, Math.PI * 0.38, Math.PI * 0.42), hairMat);
+        beard.position.set(0, 1.50, 0.10);
         g.add(beard);
 
+        // Moustache
+        const moustache = new THREE.Mesh(new THREE.SphereGeometry(0.065, 6, 4, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.22), hairMat);
+        moustache.position.set(0, 1.57, 0.19);
+        g.add(moustache);
+
+        // Eyes
         [-1, 1].forEach(s => {
-          const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 5, 5), new THREE.MeshBasicMaterial({ color: 0x2a1500 }));
+          const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 6), new THREE.MeshBasicMaterial({ color: 0x2a1500 }));
           eye.position.set(s as number * 0.09, 1.66, 0.19);
           g.add(eye);
+
+          // Eyebrow
+          const brow = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.015, 0.022), hairMat);
+          brow.position.set(s as number * 0.089, 1.705, 0.205);
+          brow.rotation.z = (s as number) * -0.18;
+          g.add(brow);
         });
 
+        // Nose
+        const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.026, 0.055, 5), skinMat);
+        nose.position.set(0, 1.62, 0.21);
+        nose.rotation.x = Math.PI / 2 + 0.3;
+        g.add(nose);
+
+        // Arms
         const armGroup = new THREE.Group();
         armGroup.name = 'armGroup';
         [-1, 1].forEach(s => {
-          const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.65, 6), bodyMat);
+          const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.65, 7), bodyMat);
           arm.rotation.z = s as number * (Math.PI / 4 + 0.12);
           arm.position.set(s as number * 0.52, 1.18, 0);
           arm.castShadow = true;
           arm.name = `arm${s}`;
           armGroup.add(arm);
-          const hand = new THREE.Mesh(new THREE.SphereGeometry(0.07, 5, 5), skinMat);
-          hand.position.set(s as number * 0.82, 0.9, 0);
+          const hand = new THREE.Mesh(new THREE.SphereGeometry(0.072, 6, 6), skinMat);
+          hand.position.set(s as number * 0.83, 0.89, 0);
           armGroup.add(hand);
         });
         g.add(armGroup);
 
+        // Legs
         const legGroup = new THREE.Group();
         legGroup.name = 'legGroup';
         [-1, 1].forEach(s => {
-          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.07, 0.6, 6), new THREE.MeshLambertMaterial({ color: 0xd4c4a0 }));
+          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.07, 0.60, 7), new THREE.MeshLambertMaterial({ color: 0xd4c4a0 }));
           leg.position.set(s as number * 0.12, 0.02, 0);
           leg.castShadow = true;
           leg.name = `leg${s}`;
           legGroup.add(leg);
+
+          // Sandal
+          const sandal = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.045, 0.22), sandMat);
+          sandal.position.set(s as number * 0.12, -0.28, 0.03);
+          legGroup.add(sandal);
+          // Sandal strap
+          const strap = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.03, 0.025), sandMat);
+          strap.position.set(s as number * 0.12, -0.22, 0.03);
+          legGroup.add(strap);
         });
         g.add(legGroup);
 
         // Wing cross (shown in flight)
         const crossG = new THREE.Group();
         crossG.name = 'flyCross';
-        const cm = new THREE.MeshBasicMaterial({ color: 0xffd700, transparent: true, opacity: 0.7 });
-        const cv = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.2, 0.06), cm);
-        cv.position.y = 1.1;
+        const cm = new THREE.MeshBasicMaterial({ color: 0xffd700, transparent: true, opacity: 0.75 });
+        const cv = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.3, 0.06), cm);
+        cv.position.y = 1.15;
         crossG.add(cv);
-        const ch = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.06, 0.06), cm);
-        ch.position.set(0, 1.4, 0);
+        const ch = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.06, 0.06), cm);
+        ch.position.set(0, 1.45, 0);
         crossG.add(ch);
+        // Wing glow
+        const wingGlow = new THREE.PointLight(0xffd700, 2.0, 4);
+        wingGlow.position.y = 1.3;
+        crossG.add(wingGlow);
         crossG.visible = false;
         g.add(crossG);
 
-        const halo = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.04, 8, 26), new THREE.MeshLambertMaterial({ color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 1.1 }));
+        const halo = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.04, 10, 32), new THREE.MeshLambertMaterial({ color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 1.2 }));
         halo.position.y = 1.95;
         halo.name = 'halo';
         g.add(halo);
@@ -482,7 +541,7 @@ export default function Game() {
         g.add(hl);
 
         // Shield
-        const sh = new THREE.Mesh(new THREE.SphereGeometry(1.2, 12, 8), new THREE.MeshLambertMaterial({ color: 0x88bbff, transparent: true, opacity: 0, side: THREE.DoubleSide }));
+        const sh = new THREE.Mesh(new THREE.SphereGeometry(1.2, 14, 10), new THREE.MeshLambertMaterial({ color: 0x88bbff, transparent: true, opacity: 0, side: THREE.DoubleSide }));
         sh.name = 'shield';
         g.add(sh);
 
@@ -502,14 +561,27 @@ export default function Game() {
         const bm = new THREE.MeshLambertMaterial({ color: T.body });
         const dm = new THREE.MeshLambertMaterial({ color: T.dark });
 
-        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28 * sz, 0.34 * sz, 0.95 * sz, 8), bm);
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28 * sz, 0.34 * sz, 0.95 * sz, 9), bm);
         body.position.y = 0.47 * sz;
         body.castShadow = true;
         g.add(body);
 
+        // Archdemon: armour chest plates
+        if (type === 'a') {
+          const plate = new THREE.Mesh(new THREE.BoxGeometry(0.44 * sz, 0.55 * sz, 0.22 * sz), new THREE.MeshLambertMaterial({ color: 0x3a0000 }));
+          plate.position.set(0, 0.6 * sz, 0.18 * sz);
+          g.add(plate);
+          const pauldronL = new THREE.Mesh(new THREE.SphereGeometry(0.18 * sz, 7, 5), dm);
+          pauldronL.position.set(-0.38 * sz, 0.88 * sz, 0);
+          g.add(pauldronL);
+          const pauldronR = pauldronL.clone();
+          pauldronR.position.x = 0.38 * sz;
+          g.add(pauldronR);
+        }
+
         const hr = 0.26 * sz * (T.boss ? 1.25 : 1);
         const headY = (0.47 + 0.95 / 2 + hr) * sz;
-        const head = new THREE.Mesh(new THREE.SphereGeometry(hr, 9, 7), bm);
+        const head = new THREE.Mesh(new THREE.SphereGeometry(hr, 10, 8), bm);
         head.position.y = headY;
         head.castShadow = true;
         g.add(head);
@@ -519,7 +591,7 @@ export default function Game() {
 
         [-1, 1].forEach(s => {
           const ec = type === 'f' || type === 'z' ? 0xff6600 : type === 'd' || type === 'a' ? 0xcc00ff : type === 'l' ? 0x00ff88 : 0xff2200;
-          const eye = new THREE.Mesh(new THREE.SphereGeometry(0.055 * sz, 5, 5), new THREE.MeshBasicMaterial({ color: ec }));
+          const eye = new THREE.Mesh(new THREE.SphereGeometry(0.055 * sz, 6, 6), new THREE.MeshBasicMaterial({ color: ec }));
           eye.position.set(s as number * hr * 0.58, headY + 0.02, hr * 0.85);
           g.add(eye);
         });
@@ -542,7 +614,26 @@ export default function Game() {
           }
         }
 
+        // Legion: multiple merged skull-like protrusions
+        if (type === 'l') {
+          for (let i = 0; i < 3; i++) {
+            const a = i / 3 * Math.PI * 2 + Math.PI;
+            const extra = new THREE.Mesh(new THREE.SphereGeometry(hr * 0.55, 7, 6), bm);
+            extra.position.set(Math.cos(a) * hr * 0.95, headY + hr * 0.45, Math.sin(a) * hr * 0.65);
+            g.add(extra);
+            // Each secondary head has tiny horns
+            [-1, 1].forEach(s => {
+              const mh = new THREE.Mesh(new THREE.ConeGeometry(0.035 * sz, 0.12 * sz, 4), dm);
+              mh.position.set(Math.cos(a) * hr * 0.95 + s * 0.06 * sz, headY + hr * 0.45 + hr * 0.5, Math.sin(a) * hr * 0.65);
+              mh.rotation.z = (s as number) * 0.25;
+              g.add(mh);
+            });
+          }
+        }
+
+        // Satan: crown of thorns + trident
         if (type === 'z') {
+          // Crown
           for (let i = 0; i < 12; i++) {
             const a = i / 12 * Math.PI * 2;
             const horn = new THREE.Mesh(new THREE.ConeGeometry(0.09 * sz, 0.5 * sz, 4), new THREE.MeshLambertMaterial({ color: 0xff0000, emissive: 0xaa0000, emissiveIntensity: 0.9 }));
@@ -550,31 +641,44 @@ export default function Game() {
             horn.rotation.z = Math.cos(a) * 0.6;
             g.add(horn);
           }
-        }
-
-        if (type === 'l') {
-          for (let i = 0; i < 3; i++) {
-            const a = i / 3 * Math.PI * 2 + Math.PI;
-            const sh = new THREE.Mesh(new THREE.SphereGeometry(hr * 0.5, 6, 5), bm);
-            sh.position.set(Math.cos(a) * hr * 0.9, headY + hr * 0.5, Math.sin(a) * hr * 0.6);
-            g.add(sh);
-          }
+          // Crown band
+          const crown = new THREE.Mesh(new THREE.TorusGeometry(hr * 0.88, 0.055 * sz, 6, 20), new THREE.MeshLambertMaterial({ color: 0x880000, emissive: 0x440000, emissiveIntensity: 0.6 }));
+          crown.position.y = headY + hr * 0.8;
+          crown.rotation.x = Math.PI / 2;
+          g.add(crown);
+          // Trident (held in right hand)
+          const tridentMat = new THREE.MeshLambertMaterial({ color: 0xaa0000, emissive: 0x550000, emissiveIntensity: 0.5 });
+          const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045 * sz, 0.035 * sz, 2.0 * sz, 6), tridentMat);
+          shaft.position.set(0.82 * sz, 1.4 * sz, 0.1);
+          shaft.rotation.z = 0.18;
+          g.add(shaft);
+          // Trident prongs
+          [-1, 0, 1].forEach(s => {
+            const prong = new THREE.Mesh(new THREE.ConeGeometry(0.04 * sz, 0.4 * sz, 4), tridentMat);
+            prong.position.set(0.82 * sz + s * 0.12 * sz, 2.35 * sz, 0.1);
+            g.add(prong);
+          });
+          // Tail
+          const tail = new THREE.Mesh(new THREE.ConeGeometry(0.07 * sz, 0.7 * sz, 4), dm);
+          tail.position.set(0, 0.1 * sz, -0.4 * sz);
+          tail.rotation.x = -Math.PI / 2.2;
+          g.add(tail);
         }
 
         [-1, 1].forEach(s => {
-          const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.065 * sz, 0.065 * sz, 0.65 * sz, 6), bm);
+          const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.065 * sz, 0.065 * sz, 0.65 * sz, 7), bm);
           arm.rotation.z = s as number * (Math.PI / 4 + 0.15);
           arm.position.set(s as number * 0.5 * sz, 0.72 * sz, 0);
           g.add(arm);
           if (type === 'f' || type === 'z') {
-            const fb = new THREE.Mesh(new THREE.SphereGeometry(0.11 * sz, 5, 5), new THREE.MeshLambertMaterial({ color: 0xff6600, emissive: 0xff3300, emissiveIntensity: 1.3 }));
+            const fb = new THREE.Mesh(new THREE.SphereGeometry(0.11 * sz, 6, 6), new THREE.MeshLambertMaterial({ color: 0xff6600, emissive: 0xff3300, emissiveIntensity: 1.4 }));
             fb.position.set(s as number * 0.77 * sz, 0.47 * sz, 0);
             g.add(fb);
           }
         });
 
         [-1, 1].forEach(s => {
-          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.09 * sz, 0.08 * sz, 0.55 * sz, 6), dm);
+          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.09 * sz, 0.08 * sz, 0.55 * sz, 7), dm);
           leg.position.set(s as number * 0.15 * sz, 0.06 * sz, 0);
           leg.castShadow = true;
           g.add(leg);
@@ -589,24 +693,25 @@ export default function Game() {
 
         if (T.wings) {
           [-1, 1].forEach(s => {
-            const wing = new THREE.Mesh(new THREE.ConeGeometry(0.62 * sz, 1.15 * sz, 4, 1, true), new THREE.MeshLambertMaterial({ color: type === 'z' ? 0x550000 : type === 'a' ? 0x330000 : 0x220033, side: THREE.DoubleSide, transparent: true, opacity: 0.88 }));
+            const wingColor = type === 'z' ? 0x660000 : type === 'a' ? 0x3a0000 : 0x220033;
+            const wing = new THREE.Mesh(new THREE.ConeGeometry(0.65 * sz, 1.2 * sz, 4, 1, true), new THREE.MeshLambertMaterial({ color: wingColor, side: THREE.DoubleSide, transparent: true, opacity: 0.88 }));
             wing.rotation.z = s as number * (Math.PI / 2 + 0.38);
             wing.rotation.y = s as number * 0.28;
-            wing.position.set(s as number * 0.38 * sz, 0.88 * sz, -0.1);
+            wing.position.set(s as number * 0.40 * sz, 0.90 * sz, -0.1);
             wing.name = 'wing';
             g.add(wing);
           });
         }
 
         if (T.fire) {
-          const fl = new THREE.PointLight(0xff4400, type === 'z' ? 2.5 : 1.0, type === 'z' ? 10 : 5);
+          const fl = new THREE.PointLight(0xff4400, type === 'z' ? 3.0 : 1.2, type === 'z' ? 12 : 6);
           fl.position.y = 0.7 * sz;
           fl.name = 'fireLight';
           g.add(fl);
         }
 
         if (T.boss) {
-          const al = new THREE.PointLight(type === 'z' ? 0xff0000 : 0x880000, type === 'z' ? 2.0 : 1.3, type === 'z' ? 10 : 7);
+          const al = new THREE.PointLight(type === 'z' ? 0xff0000 : 0x880000, type === 'z' ? 2.5 : 1.5, type === 'z' ? 12 : 8);
           al.position.y = 1.2 * sz;
           al.name = 'bossLight';
           g.add(al);
@@ -682,7 +787,7 @@ export default function Game() {
           z: Math.random() * 0.4 - 0.2,
         };
         m.bobPhase = Math.random() * Math.PI * 2;
-        m.baseY = 18 + Math.random() * 14;
+        m.baseY = 1.4 + Math.random() * 1.6;
         m.position.y = m.baseY;
         return m;
       }
@@ -918,7 +1023,12 @@ export default function Game() {
       }
 
       function activateBread() {
-        if (player.cds[5] > 0 || gameRef.current.wave < 5) return;
+        if (player.cds[5] > 0) return;
+        if (gameRef.current.wave < 5) {
+          setLockedMsg('🍞 Хлеб доступен с Волны 5');
+          setTimeout(() => setLockedMsg(''), 2000);
+          return;
+        }
         player.cds[5] = 8;
 
         // Spawn 5 bread pickups
@@ -934,7 +1044,12 @@ export default function Game() {
       }
 
       function activateGrace() {
-        if (player.cds[6] > 0 || gameRef.current.wave < 10) return;
+        if (player.cds[6] > 0) return;
+        if (gameRef.current.wave < 10) {
+          setLockedMsg('☀ Благодать доступна с Волны 10');
+          setTimeout(() => setLockedMsg(''), 2000);
+          return;
+        }
         player.cds[6] = 25;
 
         enemies.forEach(e => {
@@ -1019,6 +1134,8 @@ export default function Game() {
 
         if (gameRef.current.wave === 20) {
           gameRef.current.pendingSpawnCount++;
+          setSatanWarning(true);
+          setTimeout(() => setSatanWarning(false), 4000);
           spawnTimers.push(setTimeout(() => {
             gameRef.current.pendingSpawnCount = Math.max(0, gameRef.current.pendingSpawnCount - 1);
             if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
@@ -1030,7 +1147,7 @@ export default function Game() {
         if (rings.length < 2) {
           const a = Math.random() * Math.PI * 2;
           const d = 20 + Math.random() * 50;
-          spawnRing(Math.cos(a) * d, 18 + Math.random() * 14, Math.sin(a) * d);
+          spawnRing(Math.cos(a) * d, 1.4 + Math.random() * 1.6, Math.sin(a) * d);
         }
       }
 
@@ -1168,7 +1285,7 @@ export default function Game() {
         for (let i = 0; i < 3; i++) {
           const a = Math.random() * Math.PI * 2;
           const d = 20 + Math.random() * 50;
-          spawnRing(Math.cos(a) * d, 18 + Math.random() * 14, Math.sin(a) * d);
+          spawnRing(Math.cos(a) * d, 1.4 + Math.random() * 1.6, Math.sin(a) * d);
         }
 
         spawnWave();
@@ -1358,7 +1475,7 @@ export default function Game() {
           r.rotation.x += r.rotSpeed.x * dt;
           r.rotation.y += r.rotSpeed.y * dt;
           r.rotation.z += r.rotSpeed.z * dt;
-          r.position.y = r.baseY + Math.sin(gameRef.current.gtime * 0.7 + r.bobPhase) * 2;
+          r.position.y = r.baseY + Math.sin(gameRef.current.gtime * 0.7 + r.bobPhase) * 0.4;
           const dx = player.x - r.position.x;
           const dy = player.y - r.position.y;
           const dz = player.z - r.position.z;
@@ -1407,7 +1524,7 @@ export default function Game() {
           const dx = player.x - ep.x;
           const dz = player.z - ep.z;
           const dist = Math.sqrt(dx * dx + dz * dz);
-          const hitRange = 1.15 * ENEMY_TYPES[e.type].sz * (player.flying ? 0 : 1);
+          const hitRange = 1.15 * ENEMY_TYPES[e.type].sz * (player.flying && player.y > 2.5 ? 0 : 1);
 
           if (dist < hitRange) {
             if (player.parryActive) {
@@ -1497,8 +1614,8 @@ export default function Game() {
             } else if (e.wrath > 0) {
               e.wrath -= dt;
               if (jdist > 0.1) {
-                ep.x -= (jdx / jdist) * e.speed * dt * 0.35;
-                ep.z -= (jdz / jdist) * e.speed * dt * 0.35;
+                ep.x += (jdx / jdist) * e.speed * dt * 2.0;
+                ep.z += (jdz / jdist) * e.speed * dt * 2.0;
               }
             } else if (jdist > 0.1) {
               ep.x += (jdx / jdist) * e.speed * dt;
@@ -1580,6 +1697,12 @@ export default function Game() {
             spawnFloatText(ep.x, ep.y, ep.z, `+${reward}`, '#c8a84b');
             gameRef.current.score += reward;
             gameRef.current.kills++;
+
+            // Event log entry
+            const killMsg = isBoss
+              ? `☩ ${ENEMY_TYPES[e.type].name} повержен! +${reward}`
+              : `${ENEMY_TYPES[e.type].name} +${reward}`;
+            eventQueueRef.current = [killMsg, ...eventQueueRef.current].slice(0, 6);
 
             if (isBoss) Audio.resurrect();
 
@@ -1841,7 +1964,7 @@ export default function Game() {
           if (rings.length < 2) {
             const ra = Math.random() * Math.PI * 2;
             const rd = 20 + Math.random() * 50;
-            spawnRing(Math.cos(ra) * rd, 18 + Math.random() * 14, Math.sin(ra) * rd);
+            spawnRing(Math.cos(ra) * rd, 1.4 + Math.random() * 1.6, Math.sin(ra) * rd);
           }
 
           if (time - lastHudAt >= HUD_INTERVAL_MS) {
@@ -1849,6 +1972,7 @@ export default function Game() {
             const cm = Math.min(3, 1 + Math.floor(gameRef.current.comboKills / 3) * 0.5);
             setCombo(cm > 1 ? cm : 0);
             setHp(Math.max(0, player.hp));
+            setMaxHp(player.maxHp);
             setMana(player.mana);
             setLivesLeft(player.livesLeft);
             setWave(gameRef.current.wave);
@@ -1856,6 +1980,45 @@ export default function Game() {
             setScore(gameRef.current.score);
             setHiScore(gameRef.current.hiScore);
             setCooldowns([...player.cds]);
+            setEventLog([...eventQueueRef.current]);
+
+            // Draw minimap
+            const mc = minimapRef.current;
+            if (mc) {
+              const ctx2 = mc.getContext('2d');
+              if (ctx2) {
+                const S = mc.width;
+                const half = GROUND_SIZE / 2;
+                const scale = S / GROUND_SIZE;
+                ctx2.clearRect(0, 0, S, S);
+                ctx2.fillStyle = 'rgba(0,0,0,0.82)';
+                ctx2.fillRect(0, 0, S, S);
+                ctx2.strokeStyle = '#c8a84b44';
+                ctx2.lineWidth = 1;
+                ctx2.strokeRect(0.5, 0.5, S - 1, S - 1);
+                enemies.forEach(e => {
+                  const ex = (e.mesh.position.x + half) * scale;
+                  const ez = (e.mesh.position.z + half) * scale;
+                  ctx2.fillStyle = e.ally ? '#00ff88' : ENEMY_TYPES[e.type].boss ? '#ff2200' : ENEMY_TYPES[e.type].fire ? '#ff6600' : '#ff4444';
+                  ctx2.beginPath();
+                  ctx2.arc(ex, ez, e.ally ? 2 : ENEMY_TYPES[e.type].boss ? 4.5 : 2.5, 0, Math.PI * 2);
+                  ctx2.fill();
+                });
+                // Player dot + direction
+                const px = (player.x + half) * scale;
+                const pz = (player.z + half) * scale;
+                ctx2.fillStyle = '#ffd700';
+                ctx2.beginPath();
+                ctx2.arc(px, pz, 3.5, 0, Math.PI * 2);
+                ctx2.fill();
+                ctx2.strokeStyle = '#ffd700';
+                ctx2.lineWidth = 1.5;
+                ctx2.beginPath();
+                ctx2.moveTo(px, pz);
+                ctx2.lineTo(px - Math.sin(player.yaw) * 8, pz - Math.cos(player.yaw) * 8);
+                ctx2.stroke();
+              }
+            }
           }
         } else if (gameRef.current.status === 'dead') {
           gameRef.current.gtime += rawDt;
@@ -2013,11 +2176,11 @@ export default function Game() {
               <div className="w-44 h-3 bg-red-900 rounded mt-1 overflow-hidden">
                 <div
                   className="h-full bg-gradient-to-r from-red-800 via-red-600 to-red-400 transition-all duration-150"
-                  style={{ width: `${(hp / 100) * 100}%` }}
+                  style={{ width: `${Math.max(0, (hp / maxHp) * 100)}%` }}
                 />
               </div>
               <div className="text-gray-300 text-xs text-right mt-0.5 font-serif">
-                {Math.round(hp)} / 100
+                {Math.round(hp)} / {maxHp}
               </div>
               {/* Mana */}
               <div className="text-amber-500 text-xs tracking-widest font-serif uppercase mt-2">✞ Вознесение</div>
@@ -2049,17 +2212,20 @@ export default function Game() {
 
             {/* Abilities */}
             <div className="bg-black/80 border border-amber-600/60 rounded-md p-2 backdrop-blur-sm">
-              {ABILITY_ICONS.map((icon, i) => (
-                <div key={i} className="flex items-center gap-2 my-0.5">
-                  <div className="w-6 h-6 bg-amber-600 rounded flex items-center justify-center text-xs font-bold text-black">
-                    {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
+              {ABILITY_ICONS.map((icon, i) => {
+                const locked = (i === 5 && wave < 5) || (i === 6 && wave < 10);
+                return (
+                  <div key={i} className="flex items-center gap-2 my-0.5">
+                    <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${locked ? 'bg-gray-700 text-gray-500' : 'bg-amber-600 text-black'}`}>
+                      {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
+                    </div>
+                    <span className={`text-xs ${locked ? 'opacity-30' : ''}`}>{icon}</span>
+                    <span className={`text-xs ${locked ? 'text-gray-600' : cooldowns[i] <= 0 ? 'text-amber-500' : 'text-gray-500'}`}>
+                      {locked ? `В${i === 5 ? 5 : 10}` : cooldowns[i] <= 0 ? '✓' : Math.ceil(cooldowns[i]) + 'с'}
+                    </span>
                   </div>
-                  <span className="text-gray-200 text-xs">{icon}</span>
-                  <span className={`text-xs ${cooldowns[i] <= 0 ? 'text-amber-500' : 'text-gray-500'}`}>
-                    {cooldowns[i] <= 0 ? '✓' : Math.ceil(cooldowns[i]) + 'с'}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Score */}
@@ -2076,6 +2242,47 @@ export default function Game() {
                 <div className="text-amber-500/60 text-xs font-serif">COMBO</div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Minimap */}
+      {(gameStatus === 'playing' || gameStatus === 'dead') && (
+        <div className="absolute bottom-3 right-3 pointer-events-none">
+          <canvas ref={minimapRef} width={130} height={130} className="rounded border border-amber-600/40 opacity-85" />
+        </div>
+      )}
+
+      {/* Event Log */}
+      {(gameStatus === 'playing' || gameStatus === 'dead') && eventLog.length > 0 && (
+        <div className="absolute bottom-3 left-3 pointer-events-none flex flex-col-reverse gap-0.5 max-w-xs">
+          {eventLog.map((msg, i) => (
+            <div
+              key={i}
+              className="text-xs font-serif px-2 py-0.5 rounded bg-black/60 text-amber-400/80"
+              style={{ opacity: 1 - i * 0.18 }}
+            >
+              {msg}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Locked ability toast */}
+      {lockedMsg && (
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 pointer-events-none z-40">
+          <div className="bg-black/85 border border-amber-600/60 text-amber-400 text-sm font-serif px-4 py-2 rounded-lg backdrop-blur-sm">
+            {lockedMsg}
+          </div>
+        </div>
+      )}
+
+      {/* Satan boss warning */}
+      {satanWarning && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40 animate-pulse">
+          <div className="text-red-600 text-center font-black font-serif" style={{ textShadow: '0 0 40px rgba(255,0,0,0.9)', fontSize: 'clamp(2rem, 6vw, 4rem)' }}>
+            ☩ САТАНА ЯВИЛСЯ ☩<br />
+            <span className="text-2xl font-normal">Волна 20 — финальная битва</span>
           </div>
         </div>
       )}
@@ -2105,9 +2312,11 @@ export default function Game() {
           <div className="text-red-500 text-5xl font-black tracking-widest mb-4 font-serif">✟ КОНЕЦ ✟</div>
           <div className="text-amber-500 text-xl mb-2 font-serif">ВОЛНА {wave}</div>
           <div className="text-amber-500 text-xl mb-2 font-serif">ОЧКИ {score}</div>
-          <div className="text-amber-500 text-lg mb-6 font-serif">РЕКОРД {hiScore}</div>
+          <div className="text-amber-500 text-lg mb-2 font-serif">ГРЕШНИКОВ {kills}</div>
+          <div className="text-amber-500/70 text-lg mb-6 font-serif">РЕКОРД {hiScore}</div>
           <button
-            onClick={() => window.location.reload()}
+            type="button"
+            onClick={() => showMenuRef.current?.()}
             className="bg-gradient-to-br from-amber-500 to-amber-700 text-black font-bold py-3 px-10 rounded tracking-widest hover:scale-105 transition-transform cursor-pointer pointer-events-auto font-serif"
           >
             В МЕНЮ
