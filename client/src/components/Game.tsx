@@ -13,9 +13,7 @@ const MANA_MAX = 5.0;
 const MANA_REGEN = 0.35;
 const FLY_HEIGHT = 6.0;
 
-const ABILITY_MAX = [0.35, 0.5, 5, 7, 15, 8, 25, 0]; // smite, fish, wine, parry, flood, bread, grace, fly
 const ABILITY_ICONS = ['⚡', '🐟', '🍷', '✋', '🌊', '🍞', '☀', '✞'];
-const ABILITY_COLORS = ['#ffee44', '#4499cc', '#8b0000', '#ffcc44', '#2266aa', '#d4a55a', '#ffffff', '#88ddff'];
 
 const BIBLE_CRITS = [
   '"Аз есмь" — Ин.8:58',
@@ -24,19 +22,6 @@ const BIBLE_CRITS = [
   '"Нет страха в любви" — 1Ин.4:18',
   '"Победитель" — Откр.3:21',
   '"Претерпевший спасётся" — Мф.24:13',
-];
-
-const WAVE_VERSES = [
-  '"Господь — твердыня моя" — Пс.17:3',
-  '"Не бойся, Я с тобой" — Ис.41:10',
-  '"Грядёт Судия" — Пс.95:13',
-  '"Блаженны кроткие" — Мф.5:5',
-  '"Легион — имя мне!" — Мк.5:9',
-  '"Велика сила Его" — Иов.9:4',
-  '"Ищите и найдёте" — Мф.7:7',
-  '"Пришёл час" — Ин.12:23',
-  '"Буря стихнет" — Мф.8:26',
-  '"Се, грядёт с облаками" — Откр.1:7',
 ];
 
 // Enemy Types (from GDD)
@@ -213,7 +198,6 @@ export default function Game() {
   const [cooldowns, setCooldowns] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
   const [combo, setCombo] = useState(0);
   const [deadTimer, setDeadTimer] = useState(0);
-  const [resurrectCount, setResurrectCount] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
 
   // Refs for game loop (mutable state)
@@ -739,6 +723,7 @@ export default function Game() {
           scene.add(m);
           particles.push({ mesh: m, v, life: 0 });
         }
+        mat.dispose(); // base template material no longer needed
       }
 
       function spawnRing(x: number, y: number, z: number) {
@@ -746,6 +731,22 @@ export default function Game() {
         r.position.set(x, y, z);
         scene.add(r);
         rings.push(r);
+      }
+
+      function disposeMesh(obj: THREE.Object3D) {
+        obj.traverse(child => {
+          if (child instanceof THREE.Mesh) {
+            child.geometry.dispose();
+            const mat = child.material;
+            if (Array.isArray(mat)) mat.forEach(m => m.dispose());
+            else mat.dispose();
+          }
+        });
+      }
+
+      function disposeRing(r: CelestialRing) {
+        (r as unknown as THREE.Mesh).geometry.dispose();
+        ((r as unknown as THREE.Mesh).material as THREE.Material).dispose();
       }
 
       // ═══════════════════════════════════════════════════════
@@ -814,7 +815,7 @@ export default function Game() {
       // ═══════════════════════════════════════════════════════
       //  GAME ENTITIES
       // ═══════════════════════════════════════════════════════
-      let player = {
+      const player = {
         mesh: null as THREE.Group | null,
         x: 0,
         z: 0,
@@ -1088,13 +1089,13 @@ export default function Game() {
         scene.add(player.mesh);
 
         // Clear entities
-        enemies.forEach(e => scene.remove(e.mesh as THREE.Group));
+        enemies.forEach(e => { disposeMesh(e.mesh); scene.remove(e.mesh); });
         enemies.length = 0;
-        projectiles.forEach(p => scene.remove(p.mesh));
+        projectiles.forEach(p => { disposeMesh(p.mesh); scene.remove(p.mesh); });
         projectiles.length = 0;
-        pickups.forEach(p => scene.remove(p.mesh));
+        pickups.forEach(p => { disposeMesh(p.mesh); scene.remove(p.mesh); });
         pickups.length = 0;
-        rings.forEach(r => scene.remove(r));
+        rings.forEach(r => { disposeRing(r); scene.remove(r); });
         rings.length = 0;
         floatTexts.forEach(f => {
           (f.mesh.material as THREE.SpriteMaterial).map?.dispose();
@@ -1323,11 +1324,13 @@ export default function Game() {
           const dx = player.x - (pk.mesh as THREE.Mesh).position.x;
           const dz = player.z - (pk.mesh as THREE.Mesh).position.z;
           if (Math.sqrt(dx * dx + dz * dz) < 0.9) {
-            scene.remove(pk.mesh as THREE.Mesh);
+            disposeMesh(pk.mesh);
+            scene.remove(pk.mesh);
             player.hp = Math.min(player.maxHp, player.hp + pk.hp);
             pickups.splice(i, 1);
           } else if (pk.life >= pk.maxLife) {
-            scene.remove(pk.mesh as THREE.Mesh);
+            disposeMesh(pk.mesh);
+            scene.remove(pk.mesh);
             pickups.splice(i, 1);
           }
         }
@@ -1343,6 +1346,7 @@ export default function Game() {
           const dy = player.y - r.position.y;
           const dz = player.z - r.position.z;
           if (Math.sqrt(dx * dx + dy * dy + dz * dz) < 2.5) {
+            disposeRing(r);
             scene.remove(r);
             rings.splice(i, 1);
             player.mana = Math.min(MANA_MAX, player.mana + 1.5);
@@ -1468,6 +1472,7 @@ export default function Game() {
             }
             if (e.allyTimer <= 0 || e.hp <= 0) {
               spawnParticles(ep.x, ep.y + 0.8, ep.z, 0x88ff88, 4);
+              disposeMesh(em);
               scene.remove(em);
               enemies.splice(i, 1);
               continue;
@@ -1565,6 +1570,7 @@ export default function Game() {
               localStorage.setItem('jw_hi', gameRef.current.hiScore.toString());
             }
 
+            disposeMesh(em);
             scene.remove(em);
             enemies.splice(i, 1);
           }
@@ -1613,6 +1619,7 @@ export default function Game() {
           if (p.type === 'fish') p.mesh.rotation.y = Math.atan2(p.dir.x, p.dir.z);
 
           if (p.life > p.maxLife) {
+            disposeMesh(p.mesh);
             scene.remove(p.mesh);
             projectiles.splice(i, 1);
             continue;
@@ -1641,6 +1648,7 @@ export default function Game() {
                 }
                 if (p.type === 'smite') chainLightning(p.mesh.position.clone(), e, dmg);
               }
+              disposeMesh(p.mesh);
               scene.remove(p.mesh);
               projectiles.splice(i, 1);
               hit = true;
@@ -1701,7 +1709,6 @@ export default function Game() {
           }
 
           setLivesLeft(player.livesLeft);
-          setResurrectCount(gameRef.current.resurrectCount);
 
           gameRef.current.status = 'playing';
           setGameStatus('playing');
@@ -1974,7 +1981,7 @@ export default function Game() {
               {ABILITY_ICONS.map((icon, i) => (
                 <div key={i} className="flex items-center gap-2 my-0.5">
                   <div className="w-6 h-6 bg-amber-600 rounded flex items-center justify-center text-xs font-bold text-black">
-                    {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : ['Q', 'E', 'R', 'F', 'G', 'S'][i - 2]}
+                    {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
                   </div>
                   <span className="text-gray-200 text-xs">{icon}</span>
                   <span className={`text-xs ${cooldowns[i] <= 0 ? 'text-amber-500' : 'text-gray-500'}`}>
