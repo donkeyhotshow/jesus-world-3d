@@ -975,6 +975,10 @@ export default function Game() {
 
       const camPos = new THREE.Vector3(0, 8, 10);
       const camShakeVec = new THREE.Vector3();
+      // Reusable scratch vectors — allocated once to avoid per-frame GC pressure
+      const _vLook = new THREE.Vector3();
+      const _vDesired = new THREE.Vector3();
+      const _vHoming = new THREE.Vector3();
 
       // ═══════════════════════════════════════════════════════
       //  ABILITIES
@@ -1874,9 +1878,11 @@ export default function Game() {
             });
             const nearEnemy = ne as Enemy | null;
             if (nearEnemy && nd < 20) {
-              const td = nearEnemy.mesh.position.clone().add(new THREE.Vector3(0, 0.8, 0)).sub(p.mesh.position).normalize();
-              p.dir.x = THREE.MathUtils.lerp(p.dir.x, td.x, dt * 4);
-              p.dir.z = THREE.MathUtils.lerp(p.dir.z, td.z, dt * 4);
+              // Reuse scratch vector — avoids 2 allocations per physics step
+              _vHoming.set(nearEnemy.mesh.position.x, nearEnemy.mesh.position.y + 0.8, nearEnemy.mesh.position.z)
+                .sub(p.mesh.position).normalize();
+              p.dir.x = THREE.MathUtils.lerp(p.dir.x, _vHoming.x, dt * 4);
+              p.dir.z = THREE.MathUtils.lerp(p.dir.z, _vHoming.z, dt * 4);
               const len = Math.sqrt(p.dir.x * p.dir.x + p.dir.z * p.dir.z);
               p.dir.x /= len;
               p.dir.z /= len;
@@ -2001,9 +2007,12 @@ export default function Game() {
 
           Audio.resurrect();
 
-          // Damage nearby enemies on resurrect
+          // Damage nearby enemies on resurrect — inline squared-distance avoids per-enemy Vector3 allocation
           enemies.forEach(e => {
-            if ((e.mesh as THREE.Group).position.distanceTo(new THREE.Vector3(player.x, 0, player.z)) < 7) {
+            const ep = (e.mesh as THREE.Group).position;
+            const ddx = ep.x - player.x;
+            const ddz = ep.z - player.z;
+            if (ddx * ddx + ddz * ddz < 49) { // 7² = 49
               e.hp = 0;
             } else {
               e.hp = Math.ceil(e.hp * 0.5);
@@ -2018,12 +2027,12 @@ export default function Game() {
       function updateCamera() {
         gameRef.current.camPitch = Math.max(-0.9, Math.min(0.5, gameRef.current.camPitch));
 
-        const lookTarget = new THREE.Vector3(player.x, 1.4 + player.y * 0.5, player.z);
+        _vLook.set(player.x, 1.4 + player.y * 0.5, player.z);
         const ox = -Math.sin(gameRef.current.camYaw) * Math.cos(gameRef.current.camPitch) * CAM_DIST;
         const oy = -Math.sin(gameRef.current.camPitch) * CAM_DIST + 1.8 + player.y * 0.3;
         const oz = -Math.cos(gameRef.current.camYaw) * Math.cos(gameRef.current.camPitch) * CAM_DIST;
-        const desired = new THREE.Vector3(player.x + ox, Math.max(1.5, lookTarget.y + oy), player.z + oz);
-        camPos.lerp(desired, 0.22);
+        _vDesired.set(player.x + ox, Math.max(1.5, _vLook.y + oy), player.z + oz);
+        camPos.lerp(_vDesired, 0.22);
 
         // Camera lean toward movement direction (gentle drift)
         let lx = 0; let lz = 0;
@@ -2051,7 +2060,7 @@ export default function Game() {
         }
 
         camera.position.copy(camPos);
-        camera.lookAt(lookTarget);
+        camera.lookAt(_vLook);
 
         // FOV animation: kick then relax back to BASE_FOV
         if (gameRef.current.targetFov > BASE_FOV) {
@@ -2207,7 +2216,16 @@ export default function Game() {
           if (time - lastHudAt >= HUD_INTERVAL_MS) {
             lastHudAt = time;
             setDeadTimer(Math.max(0, Math.ceil(gameRef.current.deadTimer)));
-            if (gameRef.current.status === 'dead') setHp(0);
+            if (gameRef.current.status === 'dead') {
+              // Still dead: show 0 HP
+              setHp(0);
+            } else {
+              // Just transitioned to 'playing' inside updateDead (resurrection):
+              // sync real HP immediately so the UI never shows 0 on a live player
+              setHp(player.hp);
+              setLivesLeft(player.livesLeft);
+              lastHudAt = 0; // force full HUD refresh next frame
+            }
           }
         }
 
