@@ -140,6 +140,7 @@ interface Player {
   coyoteTime: number;    // coyote jump window (sec)
   prevOnGround: boolean;
   idlePhase: number;     // slow bob when stationary
+  resurrectScale: number; // 0 → 1, pop-in animation on resurrection
 }
 
 interface Enemy {
@@ -216,6 +217,8 @@ export default function Game() {
   const [lockedMsg, setLockedMsg] = useState('');
   const [satanWarning, setSatanWarning] = useState(false);
   const [hitFlash, setHitFlash] = useState(0); // 0-1, red screen overlay
+  const [bibleQuoteNotif, setBibleQuoteNotif] = useState('');
+  const [bibleQuoteOpacity, setBibleQuoteOpacity] = useState(0);
 
   // Refs for game loop (mutable state)
   const gameRef = useRef({
@@ -239,6 +242,9 @@ export default function Game() {
     camShake: 0,
     targetFov: BASE_FOV,
     hitFlashVal: 0,    // raw value, synced to React state every HUD tick
+    // Bible quote notification (set on boss crit, fades over 3s)
+    bibleQuoteText: '',
+    bibleQuoteFade: 0,
   });
 
   useEffect(() => {
@@ -966,6 +972,7 @@ export default function Game() {
         coyoteTime: 0,
         prevOnGround: true,
         idlePhase: 0,
+        resurrectScale: 1,
       };
 
       const enemies: Enemy[] = [];
@@ -1302,6 +1309,8 @@ export default function Game() {
         gameRef.current.waterOn = false;
         gameRef.current.waterTimer = 0;
         gameRef.current.pendingSpawnCount = 0;
+        gameRef.current.bibleQuoteText = '';
+        gameRef.current.bibleQuoteFade = 0;
         waterMesh.visible = false;
         skyMat.uniforms.topColor.value.set(0x3a7bd5);
         skyMat.uniforms.bottomColor.value.set(0x8fbbe0);
@@ -1313,7 +1322,7 @@ export default function Game() {
         player.dead = false;
         player.iframes = 0;
         player.livesLeft = MAX_RESURRECTS;
-        player.cds = [0, 0, 0, 0, 0, 0, 0, 0];
+        player.cds = [0, 0, 0, 0, 0, 0, 0, 30]; // slot 7 = passive shield, starts at 30s charge
         player.cheekOn = false;
         player.cheekT = 0;
         player.parryActive = false;
@@ -1334,6 +1343,7 @@ export default function Game() {
         player.coyoteTime = 0;
         player.prevOnGround = true;
         player.idlePhase = 0;
+        player.resurrectScale = 1;
 
         gameRef.current.camYaw = 0;
         gameRef.current.camPitch = -0.22;
@@ -1451,9 +1461,18 @@ export default function Game() {
           player.landSquash = Math.max(0, player.landSquash - dt * 6);
           const sy = 1 - player.landSquash * 0.45;
           const sx = 1 + player.landSquash * 0.22;
-          player.mesh!.scale.set(sx, sy, sx);
+          player.mesh!.scale.set(sx * player.resurrectScale, sy * player.resurrectScale, sx * player.resurrectScale);
         } else {
-          player.mesh!.scale.set(1, 1, 1);
+          if (player.resurrectScale < 1) {
+            // Pop-in animation: overshoot to 1.12 then settle at 1
+            player.resurrectScale = Math.min(1, player.resurrectScale + dt * 3.5);
+            const popScale = player.resurrectScale < 0.85
+              ? player.resurrectScale
+              : 1 + Math.sin((player.resurrectScale - 0.85) / 0.15 * Math.PI) * 0.12;
+            player.mesh!.scale.setScalar(popScale);
+          } else {
+            player.mesh!.scale.set(1, 1, 1);
+          }
         }
 
         // Walk / fly animation
@@ -1532,9 +1551,17 @@ export default function Game() {
           sh.rotation.y += dt * 3;
         }
 
-        // Cooldowns
+        // Cooldowns (all slots tick uniformly; slot 7 drives the passive auto-shield)
         for (let ci = 0; ci < player.cds.length; ci++) {
-          if (ci !== 7) player.cds[ci] = Math.max(0, player.cds[ci] - dt);
+          player.cds[ci] = Math.max(0, player.cds[ci] - dt);
+        }
+        // Passive auto-shield: every 30s grant a 1-hit shield when cds[7] reaches 0
+        if (player.cds[7] <= 0 && !player.dead && !player.shieldOn) {
+          player.shieldOn = true;
+          player.shieldT = 9999; // consumed on first hit, not time-expiry
+          player.cds[7] = 30;
+          spawnFloatText(player.x, 2, player.z, '✞ ЩИТ', '#aaddff');
+          Audio.resurrect();
         }
         if (player.iframes > 0) player.iframes -= dt;
         if (player.cheekOn) {
@@ -1649,6 +1676,10 @@ export default function Game() {
             } else if (player.shieldOn) {
               spawnFloatText(ep.x, ep.y, ep.z, '🛡 БЛК', '#88bbff');
               e.stepCd = 1;
+              // Shield absorbs exactly one hit then breaks
+              player.shieldOn = false;
+              player.shieldT = 0;
+              gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.18);
             } else if (player.iframes <= 0) {
               const dmg = ENEMY_TYPES[e.type].dmg;
               player.hp -= dmg;
@@ -1927,6 +1958,11 @@ export default function Game() {
                   // Crit: mini screen shake + FOV pulse
                   gameRef.current.camShake = Math.max(gameRef.current.camShake, 0.14);
                   gameRef.current.targetFov = Math.max(gameRef.current.targetFov, BASE_FOV + 6);
+                  // Bible quote notification when critting a boss
+                  if (ENEMY_TYPES[e.type].boss && p.bibleQuote) {
+                    gameRef.current.bibleQuoteText = p.bibleQuote;
+                    gameRef.current.bibleQuoteFade = 3.0;
+                  }
                   Audio.crit();
                 } else {
                   spawnParticles(p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0xff5500, 5);
@@ -2004,6 +2040,7 @@ export default function Game() {
           player.iframes = 4;
           player.shieldOn = true;
           player.shieldT = 5;
+          player.resurrectScale = 0.01; // pop-in animation starts from near-zero
 
           Audio.resurrect();
 
@@ -2167,6 +2204,18 @@ export default function Game() {
               setHitFlash(gameRef.current.hitFlashVal);
             } else {
               setHitFlash(0);
+            }
+
+            // Bible quote fade-out
+            if (gameRef.current.bibleQuoteFade > 0) {
+              gameRef.current.bibleQuoteFade = Math.max(0, gameRef.current.bibleQuoteFade - HUD_INTERVAL_MS / 1000);
+              setBibleQuoteNotif(gameRef.current.bibleQuoteText);
+              // Fade in over first 0.4s, hold, fade out over last 1s
+              const f = gameRef.current.bibleQuoteFade;
+              setBibleQuoteOpacity(Math.min(1, Math.min(f, 3 - f) * 2.5));
+            } else if (bibleQuoteNotif) {
+              setBibleQuoteNotif('');
+              setBibleQuoteOpacity(0);
             }
 
             // Draw minimap
@@ -2427,11 +2476,11 @@ export default function Game() {
                 return (
                   <div key={i} className="flex items-center gap-2 my-0.5">
                     <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${locked ? 'bg-gray-700 text-gray-500' : 'bg-amber-600 text-black'}`}>
-                      {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
+                      {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : i === 7 ? '★' : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
                     </div>
                     <span className={`text-xs ${locked ? 'opacity-30' : ''}`}>{icon}</span>
                     <span className={`text-xs ${locked ? 'text-gray-600' : cooldowns[i] <= 0 ? 'text-amber-500' : 'text-gray-500'}`}>
-                      {locked ? `В${i === 5 ? 5 : 10}` : cooldowns[i] <= 0 ? '✓' : Math.ceil(cooldowns[i]) + 'с'}
+                      {locked ? `В${i === 5 ? 5 : 10}` : i === 7 && cooldowns[i] <= 0 ? '🛡' : cooldowns[i] <= 0 ? '✓' : Math.ceil(cooldowns[i]) + 'с'}
                     </span>
                   </div>
                 );
@@ -2460,6 +2509,19 @@ export default function Game() {
       {(gameStatus === 'playing' || gameStatus === 'dead') && (
         <div className="absolute bottom-3 right-3 pointer-events-none">
           <canvas ref={minimapRef} width={130} height={130} className="rounded border border-amber-600/40 opacity-85" />
+        </div>
+      )}
+
+      {/* Bible Quote notification — bottom center, gold, fade on boss crit */}
+      {bibleQuoteNotif && (
+        <div
+          className="absolute bottom-40 left-1/2 -translate-x-1/2 pointer-events-none z-30 text-center"
+          style={{ opacity: bibleQuoteOpacity, transition: 'opacity 0.1s' }}
+        >
+          <div className="text-amber-400 font-serif text-base px-5 py-2 rounded-lg bg-black/70 border border-amber-600/50 backdrop-blur-sm"
+            style={{ textShadow: '0 0 18px rgba(200,168,75,0.7)' }}>
+            ✝ {bibleQuoteNotif}
+          </div>
         </div>
       )}
 
