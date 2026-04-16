@@ -1048,7 +1048,7 @@ export default function Game() {
           type,
           hp: Math.ceil(T.hp * ws),
           maxHp: Math.ceil(T.hp * ws),
-          speed: T.spd * (1 + wave * 0.035),
+          speed: T.spd * (1 + wave * 0.035) * (gameRef.current.waterOn ? 0.4 : 1),
           iframes: 0,
           drunk: 0,
           drunkExplode: false,
@@ -1648,22 +1648,25 @@ export default function Game() {
           for (let j = enemies.length - 1; j >= 0; j--) {
             const e = enemies[j];
             if (e.ally) continue;
-            if (p.mesh.position.distanceTo((e.mesh as THREE.Group).position) < 1.15 * ENEMY_TYPES[e.type].sz) {
+            const ep2 = (e.mesh as THREE.Group).position;
+            const hdx = p.mesh.position.x - ep2.x;
+            const hdz = p.mesh.position.z - ep2.z;
+            if (Math.sqrt(hdx * hdx + hdz * hdz) < 1.15 * ENEMY_TYPES[e.type].sz) {
               if (p.type === 'wine') {
                 e.drunk = 4;
                 e.drunkExplode = true;
-                spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, '🍷 ПЬЯН!', '#ffaa44');
+                spawnFloatText(ep2.x, ep2.y, ep2.z, '🍷 ПЬЯН!', '#ffaa44');
               } else {
                 const base = p.type === 'smite' ? 2 : 1;
                 const dmg = p.crit ? base * 3 : base;
                 e.hp -= dmg;
                 if (p.crit) {
                   spawnParticles(p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0xff8800, 10);
-                  spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y + 1, (e.mesh as THREE.Group).position.z, `⚡КРИТ -${dmg}`, '#ff8800');
+                  spawnFloatText(ep2.x, ep2.y + 1, ep2.z, `⚡КРИТ -${dmg}`, '#ff8800');
                   Audio.crit();
                 } else {
                   spawnParticles(p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0xff5500, 5);
-                  spawnFloatText((e.mesh as THREE.Group).position.x, (e.mesh as THREE.Group).position.y, (e.mesh as THREE.Group).position.z, `-${dmg}`, '#ff5555');
+                  spawnFloatText(ep2.x, ep2.y, ep2.z, `-${dmg}`, '#ff5555');
                 }
                 if (p.type === 'smite') chainLightning(p.mesh.position.clone(), e, dmg);
               }
@@ -1861,7 +1864,7 @@ export default function Game() {
           updateEnemies(rawDt);
           updateFloats(rawDt);
           updateCamera();
-          setHp(0);
+          if (gameRef.current.status === 'dead') setHp(0);
         }
 
         renderer.render(scene, camera);
