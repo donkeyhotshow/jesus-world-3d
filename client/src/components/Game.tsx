@@ -843,6 +843,7 @@ export default function Game() {
       const enemies: Enemy[] = [];
       const projectiles: Projectile[] = [];
       const pickups: Pickup[] = [];
+      const spawnTimers: ReturnType<typeof setTimeout>[] = [];
 
       const camPos = new THREE.Vector3(0, 8, 10);
 
@@ -903,6 +904,7 @@ export default function Game() {
       function parryCounter() {
         const cPos = new THREE.Vector3(player.x, 1, player.z);
         enemies.forEach(e => {
+          if (e.ally) return;
           const d = (e.mesh as THREE.Group).position.distanceTo(cPos);
           if (d < 6) {
             e.hp -= 4;
@@ -979,7 +981,8 @@ export default function Game() {
       //  WAVE SPAWNING
       // ═══════════════════════════════════════════════════════
       function pickType(w: number) {
-        if (w === 20) return 'z';
+        // Wave 20: Satan spawns exclusively via spawnWave boss-slot; regular slots use 'a'
+        if (w === 20) return 'a';
         if (w % 5 === 0 && w >= 5 && Math.random() < 0.5) return 'a';
         const r = Math.random();
         if (w >= 8 && r < 0.07) return 'l';
@@ -994,27 +997,27 @@ export default function Game() {
         const boss = gameRef.current.wave % 5 === 0 && gameRef.current.wave >= 5;
 
         for (let i = 0; i < n; i++) {
-          setTimeout(() => {
-            if (gameRef.current.status === 'menu') return;
+          spawnTimers.push(setTimeout(() => {
+            if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
             const t = pickType(gameRef.current.wave);
             const a = Math.random() * Math.PI * 2;
             const d = 18 + Math.random() * 12;
             spawnEnemy(t, Math.cos(a) * d, Math.sin(a) * d, gameRef.current.wave);
-          }, i * 360 + 180);
+          }, i * 360 + 180));
         }
 
         if (boss && gameRef.current.wave < 20) {
-          setTimeout(() => {
-            if (gameRef.current.status === 'menu') return;
+          spawnTimers.push(setTimeout(() => {
+            if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
             spawnEnemy('a', 15, 15, gameRef.current.wave);
-          }, n * 360 + 600);
+          }, n * 360 + 600));
         }
 
         if (gameRef.current.wave === 20) {
-          setTimeout(() => {
-            if (gameRef.current.status === 'menu') return;
+          spawnTimers.push(setTimeout(() => {
+            if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
             spawnEnemy('z', 0, 20, gameRef.current.wave);
-          }, n * 360 + 1000);
+          }, n * 360 + 1000));
         }
 
         // Replenish celestial rings
@@ -1083,7 +1086,11 @@ export default function Game() {
       //  GAME INIT
       // ═══════════════════════════════════════════════════════
       function initGame() {
-        if (player.mesh) scene.remove(player.mesh);
+        // Cancel pending spawn timers from previous wave/game
+        spawnTimers.forEach(id => clearTimeout(id));
+        spawnTimers.length = 0;
+
+        if (player.mesh) { disposeMesh(player.mesh); scene.remove(player.mesh); }
         player.mesh = makeJesus();
         player.mesh.position.set(0, 0, 0);
         scene.add(player.mesh);
@@ -1350,6 +1357,7 @@ export default function Game() {
             scene.remove(r);
             rings.splice(i, 1);
             player.mana = Math.min(MANA_MAX, player.mana + 1.5);
+            Audio.ring();
           }
         }
 
@@ -1538,9 +1546,13 @@ export default function Game() {
               for (let k = 0; k < 3; k++) {
                 const a = k / 3 * Math.PI * 2;
                 const d = 2;
-                setTimeout(() => {
-                  spawnEnemy('s', ep.x + Math.cos(a) * d, ep.z + Math.sin(a) * d, Math.max(1, gameRef.current.wave - 2));
-                }, 50);
+                const sx = ep.x + Math.cos(a) * d;
+                const sz = ep.z + Math.sin(a) * d;
+                const spawnWave = Math.max(1, gameRef.current.wave - 2);
+                spawnTimers.push(setTimeout(() => {
+                  if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
+                  spawnEnemy('s', sx, sz, spawnWave);
+                }, 50));
               }
             }
 
@@ -1899,6 +1911,8 @@ export default function Game() {
       // Cleanup
       return () => {
         cancelAnimationFrame(rafId);
+        spawnTimers.forEach(id => clearTimeout(id));
+        spawnTimers.length = 0;
         startGameRef.current = null;
         resumeGameRef.current = null;
         showMenuRef.current = null;
