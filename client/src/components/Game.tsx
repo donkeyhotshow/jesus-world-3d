@@ -217,6 +217,7 @@ export default function Game() {
     resurrectCount: 0,
     comboKills: 0,
     comboTimer: 0,
+    pendingSpawnCount: 0,
   });
 
   useEffect(() => {
@@ -939,7 +940,8 @@ export default function Game() {
         player.cds[6] = 25;
 
         enemies.forEach(e => {
-          e.hp -= Math.ceil(ENEMY_TYPES[e.type].hp * 0.6);
+          if (e.ally) return;
+          e.hp -= Math.ceil(e.maxHp * 0.6);
           {
             const p = (e.mesh as THREE.Group).position;
             spawnParticles(p.x, p.y, p.z, 0xffffff, 8);
@@ -997,7 +999,9 @@ export default function Game() {
         const boss = gameRef.current.wave % 5 === 0 && gameRef.current.wave >= 5;
 
         for (let i = 0; i < n; i++) {
+          gameRef.current.pendingSpawnCount++;
           spawnTimers.push(setTimeout(() => {
+            gameRef.current.pendingSpawnCount = Math.max(0, gameRef.current.pendingSpawnCount - 1);
             if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
             const t = pickType(gameRef.current.wave);
             const a = Math.random() * Math.PI * 2;
@@ -1007,14 +1011,18 @@ export default function Game() {
         }
 
         if (boss && gameRef.current.wave < 20) {
+          gameRef.current.pendingSpawnCount++;
           spawnTimers.push(setTimeout(() => {
+            gameRef.current.pendingSpawnCount = Math.max(0, gameRef.current.pendingSpawnCount - 1);
             if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
             spawnEnemy('a', 15, 15, gameRef.current.wave);
           }, n * 360 + 600));
         }
 
         if (gameRef.current.wave === 20) {
+          gameRef.current.pendingSpawnCount++;
           spawnTimers.push(setTimeout(() => {
+            gameRef.current.pendingSpawnCount = Math.max(0, gameRef.current.pendingSpawnCount - 1);
             if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
             spawnEnemy('z', 0, 20, gameRef.current.wave);
           }, n * 360 + 1000));
@@ -1127,6 +1135,7 @@ export default function Game() {
         gameRef.current.comboTimer = 0;
         gameRef.current.waterOn = false;
         gameRef.current.waterTimer = 0;
+        gameRef.current.pendingSpawnCount = 0;
         waterMesh.visible = false;
         skyMat.uniforms.topColor.value.set(0x3a7bd5);
         skyMat.uniforms.bottomColor.value.set(0x8fbbe0);
@@ -1369,7 +1378,7 @@ export default function Game() {
         }
 
         // Next wave
-        if (enemies.length === 0) {
+        if (enemies.length === 0 && gameRef.current.pendingSpawnCount === 0) {
           gameRef.current.waveTimer += dt;
           if (gameRef.current.waveTimer > 2.8) {
             gameRef.current.wave++;
@@ -1549,7 +1558,9 @@ export default function Game() {
                 const sx = ep.x + Math.cos(a) * d;
                 const sz = ep.z + Math.sin(a) * d;
                 const spawnWave = Math.max(1, gameRef.current.wave - 2);
+                gameRef.current.pendingSpawnCount++;
                 spawnTimers.push(setTimeout(() => {
+                  gameRef.current.pendingSpawnCount = Math.max(0, gameRef.current.pendingSpawnCount - 1);
                   if (gameRef.current.status === 'menu' || gameRef.current.status === 'gameover') return;
                   spawnEnemy('s', sx, sz, spawnWave);
                 }, 50));
@@ -1585,6 +1596,7 @@ export default function Game() {
             disposeMesh(em);
             scene.remove(em);
             enemies.splice(i, 1);
+            continue;
           }
 
           const Eb = 90;
@@ -1725,6 +1737,8 @@ export default function Game() {
           gameRef.current.status = 'playing';
           setGameStatus('playing');
           player.dead = false;
+          player.flying = false;
+          player.velY = 0;
           player.hp = player.maxHp;
           player.iframes = 4;
           player.shieldOn = true;
@@ -1931,6 +1945,27 @@ export default function Game() {
         window.removeEventListener('keyup', handleKeyUpEvent);
         window.removeEventListener('resize', handleResize);
         canvas.removeEventListener('click', handleCanvasClick);
+        // Dispose all live game objects
+        if (player.mesh) { disposeMesh(player.mesh); scene.remove(player.mesh); }
+        enemies.forEach(e => { disposeMesh(e.mesh); scene.remove(e.mesh); });
+        enemies.length = 0;
+        projectiles.forEach(p => { disposeMesh(p.mesh); scene.remove(p.mesh); });
+        projectiles.length = 0;
+        pickups.forEach(p => { disposeMesh(p.mesh); scene.remove(p.mesh); });
+        pickups.length = 0;
+        rings.forEach(r => { disposeRing(r); scene.remove(r); });
+        rings.length = 0;
+        floatTexts.forEach(f => {
+          (f.mesh.material as THREE.SpriteMaterial).map?.dispose();
+          (f.mesh.material as THREE.SpriteMaterial).dispose();
+          scene.remove(f.mesh);
+        });
+        floatTexts.length = 0;
+        particles.forEach(p => {
+          (p.mesh.material as THREE.MeshBasicMaterial).dispose();
+          scene.remove(p.mesh);
+        });
+        particles.length = 0;
         burstGeo.dispose();
         renderer.dispose();
       };
