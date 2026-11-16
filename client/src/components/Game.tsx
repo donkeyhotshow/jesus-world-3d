@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
+import { useIsMobile } from '../hooks/useMobile';
+import MobileTouchControls from './MobileTouchControls';
 
 // ═══════════════════════════════════════════════════════════════════
 //  CONSTANTS (from GDD and jesus_ultimate.html)
@@ -204,6 +206,43 @@ export default function Game() {
   const showMenuRef = useRef<(() => void) | null>(null);
   const skipDeadWaitRef = useRef<(() => void) | null>(null);
   const eventQueueRef = useRef<string[]>([]);
+  
+  // Mobile touch control refs
+  const isMobile = useIsMobile();
+  const mobileInputRef = useRef({
+    moveX: 0,
+    moveZ: 0,
+    lookDx: 0,
+    lookDy: 0,
+    pendingAbilities: [] as string[],
+    pendingAttacks: [] as number[],
+    flightHeld: false,
+  });
+
+  // Mobile input callbacks
+  const handleMobileMove = useCallback((dx: number, dz: number) => {
+    mobileInputRef.current.moveX = dx;
+    mobileInputRef.current.moveZ = dz;
+  }, []);
+
+  const handleMobileLook = useCallback((dx: number, dy: number) => {
+    mobileInputRef.current.lookDx += dx;
+    mobileInputRef.current.lookDy += dy;
+  }, []);
+
+  const handleMobileAbility = useCallback((ability: string) => {
+    if (ability === 'ShiftDown') {
+      mobileInputRef.current.flightHeld = true;
+    } else if (ability === 'ShiftUp') {
+      mobileInputRef.current.flightHeld = false;
+    } else {
+      mobileInputRef.current.pendingAbilities.push(ability);
+    }
+  }, []);
+
+  const handleMobileAttack = useCallback((button: number) => {
+    mobileInputRef.current.pendingAttacks.push(button);
+  }, []);
 
   // Game state
   const [gameStatus, setGameStatus] = useState<'menu' | 'playing' | 'paused' | 'dead' | 'gameover'>('menu');
@@ -1880,6 +1919,14 @@ export default function Game() {
         if (keys.has('KeyS') || keys.has('ArrowDown')) { mx -= Math.sin(gameRef.current.camYaw); mz -= Math.cos(gameRef.current.camYaw); }
         if (keys.has('KeyA')) { mx -= Math.cos(gameRef.current.camYaw); mz += Math.sin(gameRef.current.camYaw); }
         if (keys.has('KeyD')) { mx += Math.cos(gameRef.current.camYaw); mz -= Math.sin(gameRef.current.camYaw); }
+        
+        // Mobile joystick input (adds to keyboard input)
+        const mobMove = mobileInputRef.current;
+        if (mobMove.moveX !== 0 || mobMove.moveZ !== 0) {
+          // Convert joystick input to world-relative movement based on camera yaw
+          mx += Math.sin(gameRef.current.camYaw) * mobMove.moveZ + Math.cos(gameRef.current.camYaw) * mobMove.moveX;
+          mz += Math.cos(gameRef.current.camYaw) * mobMove.moveZ - Math.sin(gameRef.current.camYaw) * mobMove.moveX;
+        }
 
         const ml = Math.sqrt(mx * mx + mz * mz);
         const isMoving = ml > 0.01;
@@ -1899,7 +1946,7 @@ export default function Game() {
         if (isFlying) {
           player.y += (FLY_HEIGHT - player.y) * 0.08;
           player.mana -= dt;
-          const shiftHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
+          const shiftHeld = keys.has('ShiftLeft') || keys.has('ShiftRight') || mobileInputRef.current.flightHeld;
           if (player.mana <= 0 || !shiftHeld) {
             stopFlight();
             if (player.mana <= 0) player.mana = 0;
@@ -2789,6 +2836,15 @@ export default function Game() {
         }
         dx = 0;
         dy = 0;
+        
+        // Mobile look input
+        const mobileInput = mobileInputRef.current;
+        if (mobileInput.lookDx !== 0 || mobileInput.lookDy !== 0) {
+          gameRef.current.camYaw += mobileInput.lookDx;
+          gameRef.current.camPitch += mobileInput.lookDy;
+          mobileInput.lookDx = 0;
+          mobileInput.lookDy = 0;
+        }
 
         // Clouds
         clouds.forEach(c => {
@@ -2829,6 +2885,54 @@ export default function Game() {
             }
           });
           clicks.length = 0;
+          
+          // Mobile attack inputs
+          mobileInput.pendingAttacks.forEach(btn => {
+            if (btn === 0 && player.cds[0] <= 0) {
+              const isCrit = fireProjectile('smite', player.x, 1 + player.y, player.z, player.yaw);
+              player.cds[0] = 0.35;
+              if (isCrit) Audio.crit();
+              else Audio.smite();
+            }
+            if (btn === 2 && player.cds[1] <= 0) {
+              fireProjectile('fish', player.x, 1 + player.y, player.z, player.yaw);
+              player.cds[1] = 0.5;
+              Audio.fish();
+            }
+          });
+          mobileInput.pendingAttacks.length = 0;
+          
+          // Mobile ability inputs
+          mobileInput.pendingAbilities.forEach(ability => {
+            if (ability === 'Q' && player.cds[2] <= 0) {
+              fireProjectile('wine', player.x, 1 + player.y, player.z, player.yaw);
+              player.cds[2] = 5;
+              Audio.wine();
+            }
+            if (ability === 'E') activateParry();
+            if (ability === 'R') activateFlood();
+            if (ability === 'F') activateBread();
+            if (ability === 'G') activateGrace();
+            if (ability === 'Space' && !player.flying && (player.onGround || player.coyoteTime > 0)) {
+              player.velY = 9.5;
+              player.onGround = false;
+              player.coyoteTime = 0;
+              player.landSquash = -0.12;
+              gameRef.current.targetFov = Math.max(gameRef.current.targetFov, BASE_FOV + 5);
+            }
+            if (ability === 'Escape') {
+              if (gameRef.current.status === 'playing') pauseGame();
+            }
+          });
+          mobileInput.pendingAbilities.length = 0;
+          
+          // Mobile flight (Shift held)
+          if (mobileInput.flightHeld && !player.flying && player.mana > 0.3 && player.onGround) {
+            startFlight();
+          }
+          if (!mobileInput.flightHeld && player.flying) {
+            stopFlight();
+          }
 
           updateFloats(rawDt);
           updateCamera();
@@ -3089,6 +3193,19 @@ export default function Game() {
         />
       )}
 
+      {/* Mobile Touch Controls */}
+      {isMobile && (
+        <MobileTouchControls
+          onMove={handleMobileMove}
+          onLook={handleMobileLook}
+          onAbility={handleMobileAbility}
+          onAttack={handleMobileAttack}
+          gameStatus={gameStatus}
+          cooldowns={cooldowns}
+          wave={wave}
+        />
+      )}
+
       {/* HUD - only show when playing or dead */}
       {(gameStatus === 'playing' || gameStatus === 'dead') && (
         <div className="absolute top-0 left-0 w-full pointer-events-none p-3">
@@ -3133,23 +3250,25 @@ export default function Game() {
               <div className="text-gray-500 text-xs font-serif">Грешников: {kills}</div>
             </div>
 
-            {/* Abilities */}
-            <div className="bg-black/80 border border-amber-600/60 rounded-md p-2 backdrop-blur-sm">
-              {ABILITY_ICONS.map((icon, i) => {
-                const locked = (i === 5 && wave < 5) || (i === 6 && wave < 10);
-                return (
-                  <div key={i} className="flex items-center gap-2 my-0.5">
-                    <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${locked ? 'bg-gray-700 text-gray-500' : 'bg-amber-600 text-black'}`}>
-                      {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : i === 7 ? '★' : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
+            {/* Abilities - hidden on mobile as touch controls have their own buttons */}
+            {!isMobile && (
+              <div className="bg-black/80 border border-amber-600/60 rounded-md p-2 backdrop-blur-sm">
+                {ABILITY_ICONS.map((icon, i) => {
+                  const locked = (i === 5 && wave < 5) || (i === 6 && wave < 10);
+                  return (
+                    <div key={i} className="flex items-center gap-2 my-0.5">
+                      <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${locked ? 'bg-gray-700 text-gray-500' : 'bg-amber-600 text-black'}`}>
+                        {[0, 1].includes(i) ? (i === 0 ? 'ЛКМ' : 'ПКМ') : i === 7 ? '★' : ['Q', 'E', 'R', 'F', 'G', 'Sh'][i - 2]}
+                      </div>
+                      <span className={`text-xs ${locked ? 'opacity-30' : ''}`}>{icon}</span>
+                      <span className={`text-xs ${locked ? 'text-gray-600' : cooldowns[i] <= 0 ? 'text-amber-500' : 'text-gray-500'}`}>
+                        {locked ? `В${i === 5 ? 5 : 10}` : i === 7 && cooldowns[i] <= 0 ? '🛡' : cooldowns[i] <= 0 ? '✓' : Math.ceil(cooldowns[i]) + 'с'}
+                      </span>
                     </div>
-                    <span className={`text-xs ${locked ? 'opacity-30' : ''}`}>{icon}</span>
-                    <span className={`text-xs ${locked ? 'text-gray-600' : cooldowns[i] <= 0 ? 'text-amber-500' : 'text-gray-500'}`}>
-                      {locked ? `В${i === 5 ? 5 : 10}` : i === 7 && cooldowns[i] <= 0 ? '🛡' : cooldowns[i] <= 0 ? '✓' : Math.ceil(cooldowns[i]) + 'с'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Score */}
             <div className="bg-black/80 border border-amber-600/60 rounded-md px-3 py-2 text-center backdrop-blur-sm">
